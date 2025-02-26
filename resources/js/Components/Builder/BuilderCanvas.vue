@@ -1,6 +1,25 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
-import { Type, Image, Square, Layers, Save, RotateCw, RotateCcw } from 'lucide-vue-next';
+import { 
+    Type, 
+    Image, 
+    Square, 
+    Save, 
+    RotateCw, 
+    RotateCcw, 
+    Move, 
+    Layers, 
+    Palette, 
+    Ruler, 
+    Text, 
+    Settings, 
+    ZoomIn, 
+    ZoomOut, 
+    Maximize,
+    X,
+    ChevronDown,
+    ChevronUp
+} from 'lucide-vue-next';
 import axios from 'axios';
 import { debounce } from 'lodash';
 
@@ -32,6 +51,22 @@ const designHistory = ref([]);
 const historyIndex = ref(-1);
 const saveStatus = ref(''); // 'saving', 'saved', 'error'
 
+// For all transformations
+const dragStartPosition = ref({ x: 0, y: 0 });
+const elementStartPosition = ref({ x: 0, y: 0 });
+const elementStartSize = ref({ width: 0, height: 0 });
+const rotationStartPosition = ref({ x: 0, y: 0 });
+
+// Zoom functionality
+const zoomLevel = ref(1);
+const maxZoom = 5;
+const minZoom = 0.5;
+const zoomStep = 0.1;
+
+// Properties panel controls
+const activePropertyTab = ref('transform'); // 'transform', 'style', 'text', 'layer'
+const propertiesPanelExpanded = ref(true);
+
 // Watch for external changes to modelValue
 watch(() => props.modelValue, (newVal) => {
     if (JSON.stringify(elements.value) !== JSON.stringify(newVal)) {
@@ -56,7 +91,7 @@ const canvasSettings = computed(() => {
     
     const widthScale = maxDisplayWidth / width;
     const heightScale = maxDisplayHeight / height;
-    const displayScale = Math.min(widthScale, heightScale, 1);
+    const displayScale = Math.min(widthScale, heightScale, 1) * zoomLevel.value;
 
     return {
         width,
@@ -97,6 +132,35 @@ const redo = () => {
     if (historyIndex.value < designHistory.value.length - 1) {
         historyIndex.value++;
         elements.value = JSON.parse(designHistory.value[historyIndex.value]);
+    }
+};
+
+// Zoom functions
+const zoomIn = () => {
+    if (zoomLevel.value < maxZoom) {
+        zoomLevel.value = Math.min(maxZoom, zoomLevel.value + zoomStep);
+    }
+};
+
+const zoomOut = () => {
+    if (zoomLevel.value > minZoom) {
+        zoomLevel.value = Math.max(minZoom, zoomLevel.value - zoomStep);
+    }
+};
+
+const resetZoom = () => {
+    zoomLevel.value = 1;
+};
+
+// Handle zoom from mouse wheel
+const handleWheel = (e) => {
+    if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        if (e.deltaY < 0) {
+            zoomIn();
+        } else {
+            zoomOut();
+        }
     }
 };
 
@@ -157,9 +221,9 @@ const handleDrop = (e) => {
         y,
         width: elementType === 'text' ? 300 : 200,
         height: elementType === 'text' ? 100 : 200,
-        content: elementType === 'text' ? 'Double click to edit' : null,
+        content: elementType === 'text' ? 'Click to edit' : null,
         rotation: 0,
-        fontSize: 48,
+        fontSize: 12,
         fontFamily: 'Arial',
         color: '#000000',
         zIndex: elements.value.length // Add z-index for layering
@@ -176,15 +240,43 @@ const startDragging = (e, element) => {
     selectedElement.value = element;
     isDragging.value = true;
     
-    // Get canvas rectangle for correct coordinate calculation
-    const canvasRect = e.currentTarget.parentElement.getBoundingClientRect();
+    // Store starting positions in client coordinates
+    dragStartPosition.value = { x: e.clientX, y: e.clientY };
+    elementStartPosition.value = { x: element.x, y: element.y };
+};
+
+const startResizing = (e, element, direction) => {
+    e.stopPropagation();
     
-    // Calculate the offset using the element's current position and the mouse position
-    // Both in canvas coordinates (not screen coordinates)
-    dragOffset.value = {
-        x: (e.clientX - canvasRect.left) / canvasSettings.value.displayScale - element.x,
-        y: (e.clientY - canvasRect.top) / canvasSettings.value.displayScale - element.y
-    };
+    selectedElement.value = element;
+    isResizing.value = true;
+    resizeDirection.value = direction;
+    
+    // Store starting positions and size
+    dragStartPosition.value = { x: e.clientX, y: e.clientY };
+    elementStartPosition.value = { x: element.x, y: element.y };
+    elementStartSize.value = { width: element.width, height: element.height };
+};
+
+const startRotating = (e, element) => {
+    e.stopPropagation();
+    
+    selectedElement.value = element;
+    isRotating.value = true;
+    
+    // Store the starting mouse position
+    rotationStartPosition.value = { x: e.clientX, y: e.clientY };
+    
+    // Calculate the center of the element in screen coordinates
+    const centerX = element.x + element.width / 2;
+    const centerY = element.y + element.height / 2;
+    const centerScreenX = centerX * canvasSettings.value.displayScale;
+    const centerScreenY = centerY * canvasSettings.value.displayScale;
+    
+    // Calculate the initial angle
+    const dx = e.clientX - centerScreenX;
+    const dy = e.clientY - centerScreenY;
+    rotationStartAngle.value = Math.atan2(dy, dx) * 180 / Math.PI - element.rotation;
 };
 
 const updateElementProperty = (property, value) => {
@@ -208,38 +300,6 @@ const updateElementProperty = (property, value) => {
     saveToHistory();
 };
 
-const startResizing = (e, element, direction) => {
-    e.stopPropagation();
-    selectedElement.value = element;
-    isResizing.value = true;
-    resizeDirection.value = direction;
-    originalSize.value = {
-        width: element.width,
-        height: element.height,
-        x: element.x,
-        y: element.y
-    };
-};
-
-const startRotating = (e, element) => {
-    e.stopPropagation();
-    selectedElement.value = element;
-    isRotating.value = true;
-    
-    // Calculate the center of the element
-    const centerX = element.x + element.width / 2;
-    const centerY = element.y + element.height / 2;
-    
-    // Get canvas rectangle for correct coordinate calculation
-    const canvasRect = e.currentTarget.parentElement.getBoundingClientRect();
-    
-    // Calculate the angle between the center and the mouse position
-    const mouseX = (e.clientX - canvasRect.left) / canvasSettings.value.displayScale;
-    const mouseY = (e.clientY - canvasRect.top) / canvasSettings.value.displayScale;
-    
-    rotationStartAngle.value = Math.atan2(mouseY - centerY, mouseX - centerX) * 180 / Math.PI - element.rotation;
-};
-
 const updateSelectedElementReference = () => {
     if (selectedElement.value) {
         // Find the updated element in the elements array
@@ -252,80 +312,72 @@ const updateSelectedElementReference = () => {
 };
 
 const handleDrag = (e) => {
-    if (!isDragging.value && !isResizing.value && !isRotating.value) return;
-    
-    // Get the canvas rectangle to calculate position relative to it
-    const canvasRect = e.currentTarget.parentElement.getBoundingClientRect();
-    
+    // Handle dragging
     if (isDragging.value && selectedElement.value) {
-        // Calculate mouse position relative to canvas
-        const mouseX = e.clientX - canvasRect.left;
-        const mouseY = e.clientY - canvasRect.top;
+        // Calculate delta in client coordinates
+        const deltaX = e.clientX - dragStartPosition.value.x;
+        const deltaY = e.clientY - dragStartPosition.value.y;
         
-        // Convert to canvas coordinates with proper offset
-        const newX = (mouseX / canvasSettings.value.displayScale) - dragOffset.value.x;
-        const newY = (mouseY / canvasSettings.value.displayScale) - dragOffset.value.y;
-
-        // Update the element position
+        // Apply delta to element's starting position
+        const newX = elementStartPosition.value.x + deltaX / canvasSettings.value.displayScale;
+        const newY = elementStartPosition.value.y + deltaY / canvasSettings.value.displayScale;
+        
+        // Update element
         elements.value = elements.value.map(el => {
             if (el.id === selectedElement.value.id) {
-                const updated = { 
-                    ...el, 
-                    x: newX,
-                    y: newY
-                };
-                return updated;
+                return { ...el, x: newX, y: newY };
             }
             return el;
         });
         
-        // Update the selected element reference
-        updateSelectedElementReference();
-    } 
+        // Update selected element reference
+        selectedElement.value = elements.value.find(el => el.id === selectedElement.value.id);
+    }
+    // Handle resizing
     else if (isResizing.value && selectedElement.value) {
-        const mouseX = (e.clientX - canvasRect.left) / canvasSettings.value.displayScale;
-        const mouseY = (e.clientY - canvasRect.top) / canvasSettings.value.displayScale;
+        const deltaX = (e.clientX - dragStartPosition.value.x) / canvasSettings.value.displayScale;
+        const deltaY = (e.clientY - dragStartPosition.value.y) / canvasSettings.value.displayScale;
         
-        let newWidth = originalSize.value.width;
-        let newHeight = originalSize.value.height;
-        let newX = originalSize.value.x;
-        let newY = originalSize.value.y;
+        let newWidth = elementStartSize.value.width;
+        let newHeight = elementStartSize.value.height;
+        let newX = elementStartPosition.value.x;
+        let newY = elementStartPosition.value.y;
         
         // Handle different resize directions
         switch (resizeDirection.value) {
             case 'n':
-                newHeight = originalSize.value.height - (mouseY - originalSize.value.y);
-                newY = mouseY;
+                newHeight = elementStartSize.value.height - deltaY;
+                newY = elementStartPosition.value.y + deltaY;
                 break;
             case 's':
-                newHeight = mouseY - originalSize.value.y;
+                newHeight = elementStartSize.value.height + deltaY;
                 break;
             case 'e':
-                newWidth = mouseX - originalSize.value.x;
+                newWidth = elementStartSize.value.width + deltaX;
                 break;
             case 'w':
-                newWidth = originalSize.value.width - (mouseX - originalSize.value.x);
-                newX = mouseX;
+                newWidth = elementStartSize.value.width - deltaX;
+                newX = elementStartPosition.value.x + deltaX;
                 break;
             case 'ne':
-                newWidth = mouseX - originalSize.value.x;
-                newHeight = originalSize.value.height - (mouseY - originalSize.value.y);
-                newY = mouseY;
+                newWidth = elementStartSize.value.width + deltaX;
+                newHeight = elementStartSize.value.height - deltaY;
+                newY = elementStartPosition.value.y + deltaY;
                 break;
             case 'nw':
-                newWidth = originalSize.value.width - (mouseX - originalSize.value.x);
-                newHeight = originalSize.value.height - (mouseY - originalSize.value.y);
-                newX = mouseX;
-                newY = mouseY;
+                newWidth = elementStartSize.value.width - deltaX;
+                newHeight = elementStartSize.value.height - deltaY;
+                newX = elementStartPosition.value.x + deltaX;
+                newY = elementStartPosition.value.y + deltaY;
                 break;
             case 'se':
-                newWidth = mouseX - originalSize.value.x;
-                newHeight = mouseY - originalSize.value.y;
+                newWidth = elementStartSize.value.width + deltaX;
+                newHeight = elementStartSize.value.height + deltaY;
                 break;
             case 'sw':
-                newWidth = originalSize.value.width - (mouseX - originalSize.value.x);
-                newHeight = mouseY - originalSize.value.y;
-                newX = mouseX;
+                newWidth = elementStartSize.value.width - deltaX;
+                newHeight = elementStartSize.value.height + deltaY;
+                newX = elementStartPosition.value.x + deltaX;
                 break;
         }
         
@@ -333,41 +385,48 @@ const handleDrag = (e) => {
         newWidth = Math.max(50, newWidth);
         newHeight = Math.max(50, newHeight);
         
+        // Update element
         elements.value = elements.value.map(el => {
             if (el.id === selectedElement.value.id) {
-                return { 
-                    ...el, 
-                    width: newWidth,
-                    height: newHeight,
-                    x: newX,
-                    y: newY
-                };
+                return { ...el, width: newWidth, height: newHeight, x: newX, y: newY };
             }
             return el;
         });
+        
+        // Update selected element reference
+        selectedElement.value = elements.value.find(el => el.id === selectedElement.value.id);
     }
+    // Handle rotation
     else if (isRotating.value && selectedElement.value) {
-        // Calculate the center of the element
         const element = selectedElement.value;
+        
+        // Calculate the center of the element in screen coordinates
         const centerX = element.x + element.width / 2;
         const centerY = element.y + element.height / 2;
+        const centerScreenX = centerX * canvasSettings.value.displayScale;
+        const centerScreenY = centerY * canvasSettings.value.displayScale;
         
-        // Calculate the current angle between the center and the mouse position
-        const mouseX = (e.clientX - canvasRect.left) / canvasSettings.value.displayScale;
-        const mouseY = (e.clientY - canvasRect.top) / canvasSettings.value.displayScale;
+        // Calculate angle between center and current mouse position
+        const dx = e.clientX - centerScreenX;
+        const dy = e.clientY - centerScreenY;
+        const currentAngle = Math.atan2(dy, dx) * 180 / Math.PI;
         
-        const currentAngle = Math.atan2(mouseY - centerY, mouseX - centerX) * 180 / Math.PI;
-        const newRotation = (currentAngle - rotationStartAngle.value) % 360;
+        // Calculate new rotation
+        let newRotation = currentAngle - rotationStartAngle.value;
         
+        // Normalize rotation to 0-360 range
+        newRotation = ((newRotation % 360) + 360) % 360;
+        
+        // Update element
         elements.value = elements.value.map(el => {
             if (el.id === selectedElement.value.id) {
-                return { 
-                    ...el, 
-                    rotation: newRotation
-                };
+                return { ...el, rotation: newRotation };
             }
             return el;
         });
+        
+        // Update selected element reference
+        selectedElement.value = elements.value.find(el => el.id === selectedElement.value.id);
     }
 };
 
@@ -511,47 +570,425 @@ onUnmounted(() => {
     <div 
         class="relative w-full h-full bg-gray-100 overflow-auto"
         @click="handleCanvasClick"
+        @wheel.passive="handleWheel"
     >
-        <!-- Toolbar -->
-        <div class="absolute top-4 right-4 bg-white rounded-lg shadow p-2 flex space-x-2">
-            <button 
-                @click="undo" 
-                :disabled="historyIndex <= 0"
-                class="p-2 rounded hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed" 
-                title="Undo"
-            >
-                <RotateCcw class="size-5" />
-            </button>
-            <button 
-                @click="redo" 
-                :disabled="historyIndex >= designHistory.length - 1"
-                class="p-2 rounded hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed" 
-                title="Redo"
-            >
-                <RotateCw class="size-5" />
-            </button>
-            <button 
-                @click="saveDesign.flush" 
-                class="p-2 rounded hover:bg-gray-100" 
-                title="Save"
-            >
-                <Save class="size-5" />
-            </button>
-            <div v-if="saveStatus" class="text-sm flex items-center ml-2">
-                <span v-if="saveStatus === 'saving'">Saving...</span>
-                <span v-else-if="saveStatus === 'saved'" class="text-green-600">Saved</span>
-                <span v-else-if="saveStatus === 'error'" class="text-red-600">Error saving</span>
+        <!-- Top Toolbar -->
+        <div class="absolute top-0 left-0 right-0 bg-white shadow-md z-20 flex justify-between items-center px-4 py-2">
+            <!-- Left: Product info -->
+            <div class="text-sm font-medium">
+                {{ product.name }} - {{ product.finished_width }}" × {{ product.finished_length }}"
+            </div>
+            
+            <!-- Center: Zoom controls -->
+            <div class="flex items-center space-x-2">
+                <button 
+                    @click="zoomOut" 
+                    :disabled="zoomLevel <= minZoom"
+                    class="p-1.5 rounded-full hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed" 
+                    title="Zoom Out"
+                >
+                    <ZoomOut class="size-4" />
+                </button>
+                
+                <div class="text-sm font-medium w-16 text-center">
+                    {{ Math.round(zoomLevel * 100) }}%
+                </div>
+                
+                <button 
+                    @click="zoomIn" 
+                    :disabled="zoomLevel >= maxZoom"
+                    class="p-1.5 rounded-full hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed" 
+                    title="Zoom In"
+                >
+                    <ZoomIn class="size-4" />
+                </button>
+                
+                <button 
+                    @click="resetZoom" 
+                    class="p-1.5 rounded-full hover:bg-gray-100" 
+                    title="Reset Zoom"
+                >
+                    <Maximize class="size-4" />
+                </button>
+            </div>
+            
+            <!-- Right: History and Save controls -->
+            <div class="flex space-x-2">
+                <button 
+                    @click="undo" 
+                    :disabled="historyIndex <= 0"
+                    class="p-1.5 rounded-full hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed" 
+                    title="Undo"
+                >
+                    <RotateCcw class="size-4" />
+                </button>
+                <button 
+                    @click="redo" 
+                    :disabled="historyIndex >= designHistory.length - 1"
+                    class="p-1.5 rounded-full hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed" 
+                    title="Redo"
+                >
+                    <RotateCw class="size-4" />
+                </button>
+                <button 
+                    @click="saveDesign.flush" 
+                    class="p-1.5 rounded-full hover:bg-gray-100" 
+                    title="Save"
+                >
+                    <Save class="size-4" />
+                </button>
+                <div v-if="saveStatus" class="flex items-center ml-1">
+                    <span v-if="saveStatus === 'saving'" class="text-xs text-gray-500">Saving...</span>
+                    <span v-else-if="saveStatus === 'saved'" class="text-xs text-green-600">Saved</span>
+                    <span v-else-if="saveStatus === 'error'" class="text-xs text-red-600">Error</span>
+                </div>
             </div>
         </div>
 
-        <!-- Product Information -->
-        <div class="absolute top-4 left-4 bg-white rounded-lg shadow p-2 text-sm">
-            {{ product.name }} - {{ product.finished_width }}" × {{ product.finished_length }}"
+        <!-- Properties Panel (when an element is selected) -->
+        <div 
+            v-if="selectedElement" 
+            class="absolute top-12 left-0 right-0 bg-white shadow-md z-20"
+            @click.stop
+        >
+            <!-- Panel Header with Tabs -->
+            <div class="flex border-b border-gray-200">
+                <!-- Tab buttons -->
+                <button 
+                    @click="activePropertyTab = 'transform'" 
+                    class="flex items-center px-4 py-2 text-sm border-b-2 transition-colors focus:outline-none"
+                    :class="activePropertyTab === 'transform' ? 'border-blue-500 text-blue-600' : 'border-transparent hover:bg-gray-50'"
+                >
+                    <Move class="size-4 mr-2" />
+                    <span>Transform</span>
+                </button>
+                
+                <button 
+                    v-if="selectedElement.type === 'text'"
+                    @click="activePropertyTab = 'text'" 
+                    class="flex items-center px-4 py-2 text-sm border-b-2 transition-colors focus:outline-none"
+                    :class="activePropertyTab === 'text' ? 'border-blue-500 text-blue-600' : 'border-transparent hover:bg-gray-50'"
+                >
+                    <Text class="size-4 mr-2" />
+                    <span>Text</span>
+                </button>
+                
+                <button 
+                    @click="activePropertyTab = 'style'" 
+                    class="flex items-center px-4 py-2 text-sm border-b-2 transition-colors focus:outline-none"
+                    :class="activePropertyTab === 'style' ? 'border-blue-500 text-blue-600' : 'border-transparent hover:bg-gray-50'"
+                >
+                    <Palette class="size-4 mr-2" />
+                    <span>Style</span>
+                </button>
+                
+                <button 
+                    @click="activePropertyTab = 'layer'" 
+                    class="flex items-center px-4 py-2 text-sm border-b-2 transition-colors focus:outline-none"
+                    :class="activePropertyTab === 'layer' ? 'border-blue-500 text-blue-600' : 'border-transparent hover:bg-gray-50'"
+                >
+                    <Layers class="size-4 mr-2" />
+                    <span>Layer</span>
+                </button>
+                
+                <div class="ml-auto flex items-center px-2">
+                    <button 
+                        @click="elements = elements.filter(el => el.id !== selectedElement.id); selectedElement = null; saveToHistory();" 
+                        class="p-1.5 rounded-full hover:bg-red-100 hover:text-red-600 transition-colors"
+                        title="Delete Element"
+                    >
+                        <X class="size-4" />
+                    </button>
+                    
+                    <button 
+                        @click="propertiesPanelExpanded = !propertiesPanelExpanded" 
+                        class="p-1.5 rounded-full hover:bg-gray-100 ml-2"
+                        :title="propertiesPanelExpanded ? 'Collapse Panel' : 'Expand Panel'"
+                    >
+                        <ChevronUp v-if="propertiesPanelExpanded" class="size-4" />
+                        <ChevronDown v-else class="size-4" />
+                    </button>
+                </div>
+            </div>
+            
+            <!-- Panel Content -->
+            <div v-if="propertiesPanelExpanded" class="p-4">
+                <!-- Transform Properties -->
+                <div v-if="activePropertyTab === 'transform'">
+                    <div class="grid grid-cols-4 gap-4">
+                        <div>
+                            <label class="block text-xs text-gray-500 mb-1">Position X</label>
+                            <input 
+                                type="number" 
+                                :value="selectedElement.x"
+                                @input="updateElementProperty('x', parseFloat($event.target.value))"
+                                @change="saveToHistory"
+                                @click.stop
+                                @keydown.stop
+                                class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
+                            >
+                        </div>
+                        <div>
+                            <label class="block text-xs text-gray-500 mb-1">Position Y</label>
+                            <input 
+                                type="number" 
+                                :value="selectedElement.y"
+                                @input="updateElementProperty('y', parseFloat($event.target.value))"
+                                @change="saveToHistory"
+                                @click.stop
+                                @keydown.stop
+                                class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
+                            >
+                        </div>
+                        <div>
+                            <label class="block text-xs text-gray-500 mb-1">Width</label>
+                            <input 
+                                type="number" 
+                                :value="selectedElement.width"
+                                @input="updateElementProperty('width', parseFloat($event.target.value))"
+                                @change="saveToHistory"
+                                @click.stop
+                                @keydown.stop
+                                class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
+                            >
+                        </div>
+                        <div>
+                            <label class="block text-xs text-gray-500 mb-1">Height</label>
+                            <input 
+                                type="number" 
+                                :value="selectedElement.height"
+                                @input="updateElementProperty('height', parseFloat($event.target.value))"
+                                @change="saveToHistory"
+                                @click.stop
+                                @keydown.stop
+                                class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
+                            >
+                        </div>
+                        <div>
+                            <label class="block text-xs text-gray-500 mb-1">Rotation (°)</label>
+                            <input 
+                                type="number" 
+                                :value="selectedElement.rotation"
+                                @input="updateElementProperty('rotation', parseFloat($event.target.value))"
+                                @change="saveToHistory"
+                                @click.stop
+                                @keydown.stop
+                                class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
+                            >
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Text Properties -->
+                <div v-if="activePropertyTab === 'text' && selectedElement.type === 'text'">
+                    <div class="grid grid-cols-4 gap-4">
+                        <div class="col-span-4 mb-2">
+                            <label class="block text-xs text-gray-500 mb-1">Text Content</label>
+                            <input 
+                                type="text" 
+                                :value="selectedElement.content"
+                                @input="updateElementProperty('content', $event.target.value)"
+                                @change="saveToHistory"
+                                @click.stop
+                                @keydown.stop
+                                class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
+                            >
+                        </div>
+                        <div>
+                            <label class="block text-xs text-gray-500 mb-1">Font Size</label>
+                            <input 
+                                type="number" 
+                                :value="selectedElement.fontSize"
+                                @input="updateElementProperty('fontSize', parseFloat($event.target.value))"
+                                @change="saveToHistory"
+                                @click.stop
+                                @keydown.stop
+                                class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
+                            >
+                        </div>
+                        <div class="col-span-2">
+                            <label class="block text-xs text-gray-500 mb-1">Font Family</label>
+                            <select 
+                                :value="selectedElement.fontFamily"
+                                @input="updateElementProperty('fontFamily', $event.target.value)"
+                                @change="saveToHistory"
+                                @click.stop
+                                @keydown.stop
+                                class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
+                            >
+                                <option value="Arial">Arial</option>
+                                <option value="Times New Roman">Times New Roman</option>
+                                <option value="Courier New">Courier New</option>
+                                <option value="Georgia">Georgia</option>
+                                <option value="Verdana">Verdana</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-xs text-gray-500 mb-1">Color</label>
+                            <div class="flex items-center">
+                                <input 
+                                    type="color" 
+                                    :value="selectedElement.color" 
+                                    @input="updateElementProperty('color', $event.target.value)"
+                                    @change="saveToHistory"
+                                    @click.stop
+                                    @keydown.stop
+                                    class="w-8 h-8 p-0 rounded border border-gray-300"
+                                >
+                                <input 
+                                    type="text" 
+                                    :value="selectedElement.color"
+                                    @input="updateElementProperty('color', $event.target.value)"
+                                    @change="saveToHistory"
+                                    @click.stop
+                                    @keydown.stop
+                                    class="flex-1 ml-2 px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
+                                >
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Style Properties -->
+                <div v-if="activePropertyTab === 'style'">
+                    <div class="grid grid-cols-4 gap-4">
+                        <div v-if="selectedElement.type === 'shape'" class="col-span-2">
+                            <label class="block text-xs text-gray-500 mb-1">Fill Color</label>
+                            <div class="flex items-center">
+                                <input 
+                                    type="color" 
+                                    :value="selectedElement.color" 
+                                    @input="updateElementProperty('color', $event.target.value)"
+                                    @change="saveToHistory"
+                                    @click.stop
+                                    @keydown.stop
+                                    class="w-8 h-8 p-0 rounded border border-gray-300"
+                                >
+                                <input 
+                                    type="text" 
+                                    :value="selectedElement.color"
+                                    @input="updateElementProperty('color', $event.target.value)"
+                                    @change="saveToHistory"
+                                    @click.stop
+                                    @keydown.stop
+                                    class="flex-1 ml-2 px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
+                                >
+                            </div>
+                        </div>
+                        
+                        <div v-if="selectedElement.type === 'shape'" class="col-span-2">
+                            <label class="block text-xs text-gray-500 mb-1">Border Color</label>
+                            <div class="flex items-center">
+                                <input 
+                                    type="color" 
+                                    :value="selectedElement.borderColor || '#000000'" 
+                                    @input="updateElementProperty('borderColor', $event.target.value)"
+                                    @change="saveToHistory"
+                                    @click.stop
+                                    @keydown.stop
+                                    class="w-8 h-8 p-0 rounded border border-gray-300"
+                                >
+                                <input 
+                                    type="text" 
+                                    :value="selectedElement.borderColor || '#000000'"
+                                    @input="updateElementProperty('borderColor', $event.target.value)"
+                                    @change="saveToHistory"
+                                    @click.stop
+                                    @keydown.stop
+                                    class="flex-1 ml-2 px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
+                                >
+                            </div>
+                        </div>
+                        
+                        <div v-if="selectedElement.type === 'shape'" class="col-span-4">
+                            <label class="block text-xs text-gray-500 mb-1">Border Radius: {{ selectedElement.borderRadius || 0 }}px</label>
+                            <input 
+                                type="range" 
+                                min="0" 
+                                max="100" 
+                                :value="selectedElement.borderRadius || 0" 
+                                @input="updateElementProperty('borderRadius', parseFloat($event.target.value))"
+                                @change="saveToHistory"
+                                @click.stop
+                                @keydown.stop
+                                class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"
+                            >
+                        </div>
+                        
+                        <div v-if="selectedElement.type === 'text'" class="col-span-4">
+                            <label class="block text-xs text-gray-500 mb-1">Text Color</label>
+                            <div class="flex items-center">
+                                <input 
+                                    type="color" 
+                                    :value="selectedElement.color" 
+                                    @input="updateElementProperty('color', $event.target.value)"
+                                    @change="saveToHistory"
+                                    @click.stop
+                                    @keydown.stop
+                                    class="w-8 h-8 p-0 rounded border border-gray-300"
+                                >
+                                <input 
+                                    type="text" 
+                                    :value="selectedElement.color"
+                                    @input="updateElementProperty('color', $event.target.value)"
+                                    @change="saveToHistory"
+                                    @click.stop
+                                    @keydown.stop
+                                    class="flex-1 ml-2 px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
+                                >
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Layer Properties -->
+                <div v-if="activePropertyTab === 'layer'">
+                    <div class="flex flex-col items-center">
+                        <div class="grid grid-cols-2 gap-4 w-full mb-4">
+                            <button 
+                                @click="moveLayer('top')" 
+                                class="flex items-center justify-center py-2 px-4 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                            >
+                                <span class="mr-2">Bring to Front</span>
+                                <Layers class="size-4" />
+                            </button>
+                            <button 
+                                @click="moveLayer('up')" 
+                                class="flex items-center justify-center py-2 px-4 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                            >
+                                <span class="mr-2">Bring Forward</span>
+                                <ChevronUp class="size-4" />
+                            </button>
+                            <button 
+                                @click="moveLayer('down')" 
+                                class="flex items-center justify-center py-2 px-4 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                            >
+                                <span class="mr-2">Send Backward</span>
+                                <ChevronDown class="size-4" />
+                            </button>
+                            <button 
+                                @click="moveLayer('bottom')" 
+                                class="flex items-center justify-center py-2 px-4 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                            >
+                                <span class="mr-2">Send to Back</span>
+                                <Layers class="size-4 transform rotate-180" />
+                            </button>
+                        </div>
+                        
+                        <button 
+                            @click="elements = elements.filter(el => el.id !== selectedElement.id); selectedElement = null; saveToHistory();" 
+                            class="py-2 px-4 border border-red-300 rounded-md shadow-sm text-sm font-medium text-red-700 bg-red-50 hover:bg-red-100 focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500 w-full"
+                        >
+                            Delete Element
+                        </button>
+                    </div>
+                </div>
+            </div>
         </div>
 
         <!-- Canvas Area -->
         <div 
-            class="relative bg-white shadow-lg mx-auto my-8"
+            class="relative bg-white shadow-lg mx-auto mt-20 mb-8"
             :style="{
                 width: canvasSettings.width * canvasSettings.displayScale + 'px',
                 height: canvasSettings.height * canvasSettings.displayScale + 'px'
@@ -577,6 +1014,7 @@ onUnmounted(() => {
                 class="absolute cursor-move"
                 :class="{ 'ring-2 ring-blue-500 z-50': selectedElement?.id === element.id }"
                 :style="{
+                    position: 'absolute',
                     left: `${element.x * canvasSettings.displayScale}px`,
                     top: `${element.y * canvasSettings.displayScale}px`,
                     width: `${element.width * canvasSettings.displayScale}px`,
@@ -648,210 +1086,32 @@ onUnmounted(() => {
             </div>
         </div>
 
-        <!-- Element Properties Panel (when an element is selected) -->
-        <div v-if="selectedElement" class="absolute bottom-4 left-4 bg-white rounded-lg shadow p-4 w-72" @click.stop>
-            <h3 class="text-sm font-medium mb-3">Element Properties</h3>
-            
-            <!-- Common properties -->
-            <div class="grid grid-cols-2 gap-3 mb-3">
-                <div>
-                    <label class="block text-xs text-gray-500 mb-1">Position X</label>
-                    <input 
-                        type="number" 
-                        :value="selectedElement.x"
-                        @input="updateElementProperty('x', parseFloat($event.target.value))"
-                        @change="saveToHistory"
-                        @click.stop
-                        @keydown.stop
-                        class="w-full px-2 py-1 border rounded text-sm"
-                    >
-                </div>
-                <div>
-                    <label class="block text-xs text-gray-500 mb-1">Position Y</label>
-                    <input 
-                        type="number" 
-                        :value="selectedElement.y"
-                        @input="updateElementProperty('y', parseFloat($event.target.value))"
-                        @change="saveToHistory"
-                        @click.stop
-                        @keydown.stop
-                        class="w-full px-2 py-1 border rounded text-sm"
-                    >
-                </div>
-                <div>
-                    <label class="block text-xs text-gray-500 mb-1">Width</label>
-                    <input 
-                        type="number" 
-                        :value="selectedElement.width"
-                        @input="updateElementProperty('width', parseFloat($event.target.value))"
-                        @change="saveToHistory"
-                        @click.stop
-                        @keydown.stop
-                        class="w-full px-2 py-1 border rounded text-sm"
-                    >
-                </div>
-                <div>
-                    <label class="block text-xs text-gray-500 mb-1">Height</label>
-                    <input 
-                        type="number" 
-                        :value="selectedElement.height"
-                        @input="updateElementProperty('height', parseFloat($event.target.value))"
-                        @change="saveToHistory"
-                        @click.stop
-                        @keydown.stop
-                        class="w-full px-2 py-1 border rounded text-sm"
-                    >
-                </div>
-                <div>
-                    <label class="block text-xs text-gray-500 mb-1">Rotation</label>
-                    <input 
-                        type="number" 
-                        :value="selectedElement.rotation"
-                        @input="updateElementProperty('rotation', parseFloat($event.target.value))"
-                        @change="saveToHistory"
-                        @click.stop
-                        @keydown.stop
-                        class="w-full px-2 py-1 border rounded text-sm"
-                    >
-                </div>
-            </div>
-            
-            <!-- Text-specific properties -->
-            <div v-if="selectedElement.type === 'text'" class="grid grid-cols-2 gap-3 mb-3">
-                <div class="col-span-2">
-                    <label class="block text-xs text-gray-500 mb-1">Text</label>
-                    <input 
-                        type="text" 
-                        :value="selectedElement.content"
-                        @input="updateElementProperty('content', $event.target.value)"
-                        @change="saveToHistory"
-                        @click.stop
-                        @keydown.stop
-                        class="w-full px-2 py-1 border rounded text-sm"
-                    >
-                </div>
-                <div>
-                    <label class="block text-xs text-gray-500 mb-1">Font Size</label>
-                    <input 
-                        type="number" 
-                        :value="selectedElement.fontSize"
-                        @input="updateElementProperty('fontSize', parseFloat($event.target.value))"
-                        @change="saveToHistory"
-                        @click.stop
-                        @keydown.stop
-                        class="w-full px-2 py-1 border rounded text-sm"
-                    >
-                </div>
-                <div>
-                    <label class="block text-xs text-gray-500 mb-1">Font Family</label>
-                    <select 
-                        :value="selectedElement.fontFamily"
-                        @input="updateElementProperty('fontFamily', $event.target.value)"
-                        @change="saveToHistory"
-                        @click.stop
-                        @keydown.stop
-                        class="w-full px-2 py-1 border rounded text-sm"
-                    >
-                        <option value="Arial">Arial</option>
-                        <option value="Times New Roman">Times New Roman</option>
-                        <option value="Courier New">Courier New</option>
-                        <option value="Georgia">Georgia</option>
-                        <option value="Verdana">Verdana</option>
-                    </select>
-                </div>
-                <div class="col-span-2">
-                    <label class="block text-xs text-gray-500 mb-1">Color</label>
-                    <input 
-                        type="color" 
-                        :value="selectedElement.color" 
-                        @input="updateElementProperty('color', $event.target.value)"
-                        @change="saveToHistory"
-                        @click.stop
-                        @keydown.stop
-                        class="w-full h-8"
-                    >
-                </div>
-            </div>
-            
-            <!-- Shape-specific properties -->
-            <div v-if="selectedElement.type === 'shape'" class="grid grid-cols-2 gap-3 mb-3">
-                <div class="col-span-2">
-                    <label class="block text-xs text-gray-500 mb-1">Fill Color</label>
-                    <input 
-                        type="color" 
-                        :value="selectedElement.color" 
-                        @change="saveToHistory"
-                        @click.stop
-                        @keydown.stop
-                        class="w-full h-8"
-                    >
-                </div>
-                <div class="col-span-2">
-                    <label class="block text-xs text-gray-500 mb-1">Border Color</label>
-                    <input 
-                        type="color" 
-                        :value="selectedElement.borderColor" 
-                        @input="updateElementProperty('borderColor', $event.target.value)"
-                        @change="saveToHistory"
-                        @click.stop
-                        @keydown.stop
-                        class="w-full h-8"
-                    >
-                </div>
-                <div class="col-span-2">
-                    <label class="block text-xs text-gray-500 mb-1">Border Radius</label>
-                    <input 
-                        type="range" 
-                        min="0" 
-                        max="100" 
-                        :value="selectedElement.borderRadius" 
-                        @input="updateElementProperty('borderRadius', parseFloat($event.target.value))"
-                        @change="saveToHistory"
-                        @click.stop
-                        @keydown.stop
-                        class="w-full"
-                    >
-                </div>
-            </div>
-            
-            <!-- Layer controls -->
-            <div class="flex space-x-2 mb-3">
-                <button 
-                    @click="moveLayer('top')" 
-                    class="bg-gray-100 hover:bg-gray-200 text-xs px-2 py-1 rounded"
-                    title="Move to top"
-                >
-                    Top
-                </button>
-                <button 
-                    @click="moveLayer('up')" 
-                    class="bg-gray-100 hover:bg-gray-200 text-xs px-2 py-1 rounded"
-                    title="Move up one layer"
-                >
-                    Up
-                </button>
-                <button 
-                    @click="moveLayer('down')" 
-                    class="bg-gray-100 hover:bg-gray-200 text-xs px-2 py-1 rounded"
-                    title="Move down one layer"
-                >
-                    Down
-                </button>
-                <button 
-                    @click="moveLayer('bottom')" 
-                    class="bg-gray-100 hover:bg-gray-200 text-xs px-2 py-1 rounded"
-                    title="Move to bottom"
-                >
-                    Bottom
-                </button>
-            </div>
-            
-            <!-- Delete button -->
+        <!-- Zoom Controls (bottom right) -->
+        <div class="fixed bottom-4 right-4 bg-white rounded-full shadow-md p-1 flex items-center space-x-1 z-20">
             <button 
-                @click="elements = elements.filter(el => el.id !== selectedElement.id); selectedElement = null; saveToHistory();" 
-                class="w-full bg-red-100 hover:bg-red-200 text-red-700 mt-2 text-xs px-2 py-1 rounded"
+                @click="zoomOut" 
+                :disabled="zoomLevel <= minZoom"
+                class="p-1.5 rounded-full hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed" 
+                title="Zoom Out"
             >
-                Delete Element
+                <ZoomOut class="size-5" />
+            </button>
+            
+            <button 
+                @click="resetZoom" 
+                class="p-1.5 rounded-full hover:bg-gray-100" 
+                title="Reset Zoom"
+            >
+                <Maximize class="size-5" />
+            </button>
+            
+            <button 
+                @click="zoomIn" 
+                :disabled="zoomLevel >= maxZoom"
+                class="p-1.5 rounded-full hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed" 
+                title="Zoom In"
+            >
+                <ZoomIn class="size-5" />
             </button>
         </div>
 
