@@ -1,6 +1,6 @@
 <script setup>
 import { ref, onMounted, watch } from 'vue';
-import { X, ArrowLeft, History, RefreshCw } from 'lucide-vue-next';
+import { X, ChevronLeft, Clock, RefreshCw } from 'lucide-vue-next';
 import axios from 'axios';
 import { format } from 'date-fns';
 
@@ -82,7 +82,7 @@ onMounted(() => {
             <!-- Header -->
             <div class="p-4 border-b flex items-center justify-between">
                 <div class="flex items-center">
-                    <History class="mr-2 size-5" />
+                    <Clock class="mr-2 size-5" />
                     <h2 class="text-lg font-medium">Version History</h2>
                 </div>
                 <button 

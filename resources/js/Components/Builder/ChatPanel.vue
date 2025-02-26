@@ -87,7 +87,7 @@ const sendMessage = async () => {
         console.error('Error processing AI request:', error);
         
         // Remove the thinking message
-        messages.value = messages.value.filter(m => m.isThinking);
+        messages.value = messages.value.filter(m => !m.isThinking);
         
         // Add error message
         messages.value.push({

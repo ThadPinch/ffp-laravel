@@ -1,4 +1,5 @@
 <?php
+require __DIR__.'/api.php';
 
 use Illuminate\Foundation\Application;
 use Illuminate\Support\Facades\Route;

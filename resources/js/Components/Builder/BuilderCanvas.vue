@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
-import { Type, Image, Square, Layers, Save, ArrowClockwise, ArrowCounterClockwise } from 'lucide-vue-next';
+import { Type, Image, Square, Layers, Save, RotateCw, RotateCcw } from 'lucide-vue-next';
 import axios from 'axios';
 import { debounce } from 'lodash';
 
@@ -46,7 +46,7 @@ watch(elements, (newVal) => {
 
 // Compute canvas settings based on product dimensions
 const canvasSettings = computed(() => {
-    const dpi = 300;
+    const dpi = 72; // Using a more standard screen DPI
     const width = props.product.finished_width * dpi;
     const height = props.product.finished_length * dpi;
     
@@ -145,6 +145,8 @@ const handleDrop = (e) => {
     e.preventDefault();
     const elementType = e.dataTransfer.getData('text/plain');
     const rect = e.currentTarget.getBoundingClientRect();
+    
+    // Calculate position in canvas coordinates
     const x = (e.clientX - rect.left) / canvasSettings.value.displayScale;
     const y = (e.clientY - rect.top) / canvasSettings.value.displayScale;
 
@@ -153,8 +155,8 @@ const handleDrop = (e) => {
         type: elementType,
         x,
         y,
-        width: elementType === 'text' ? 300 : 600,
-        height: elementType === 'text' ? 100 : 600,
+        width: elementType === 'text' ? 300 : 200,
+        height: elementType === 'text' ? 100 : 200,
         content: elementType === 'text' ? 'Double click to edit' : null,
         rotation: 0,
         fontSize: 48,
@@ -174,11 +176,36 @@ const startDragging = (e, element) => {
     selectedElement.value = element;
     isDragging.value = true;
     
-    // Calculate the offset between the mouse position and the element's position
+    // Get canvas rectangle for correct coordinate calculation
+    const canvasRect = e.currentTarget.parentElement.getBoundingClientRect();
+    
+    // Calculate the offset using the element's current position and the mouse position
+    // Both in canvas coordinates (not screen coordinates)
     dragOffset.value = {
-        x: (e.clientX - e.currentTarget.getBoundingClientRect().left) / canvasSettings.value.displayScale - element.x,
-        y: (e.clientY - e.currentTarget.getBoundingClientRect().top) / canvasSettings.value.displayScale - element.y
+        x: (e.clientX - canvasRect.left) / canvasSettings.value.displayScale - element.x,
+        y: (e.clientY - canvasRect.top) / canvasSettings.value.displayScale - element.y
     };
+};
+
+const updateElementProperty = (property, value) => {
+    if (!selectedElement.value) return;
+    
+    // Update the property in the elements array
+    elements.value = elements.value.map(el => {
+        if (el.id === selectedElement.value.id) {
+            return { ...el, [property]: value };
+        }
+        return el;
+    });
+    
+    // Update the selected element reference
+    selectedElement.value = {
+        ...selectedElement.value,
+        [property]: value
+    };
+    
+    // Save the change to history
+    saveToHistory();
 };
 
 const startResizing = (e, element, direction) => {
@@ -203,12 +230,25 @@ const startRotating = (e, element) => {
     const centerX = element.x + element.width / 2;
     const centerY = element.y + element.height / 2;
     
+    // Get canvas rectangle for correct coordinate calculation
+    const canvasRect = e.currentTarget.parentElement.getBoundingClientRect();
+    
     // Calculate the angle between the center and the mouse position
-    const rect = e.currentTarget.parentElement.getBoundingClientRect();
-    const mouseX = (e.clientX - rect.left) / canvasSettings.value.displayScale;
-    const mouseY = (e.clientY - rect.top) / canvasSettings.value.displayScale;
+    const mouseX = (e.clientX - canvasRect.left) / canvasSettings.value.displayScale;
+    const mouseY = (e.clientY - canvasRect.top) / canvasSettings.value.displayScale;
     
     rotationStartAngle.value = Math.atan2(mouseY - centerY, mouseX - centerX) * 180 / Math.PI - element.rotation;
+};
+
+const updateSelectedElementReference = () => {
+    if (selectedElement.value) {
+        // Find the updated element in the elements array
+        const updated = elements.value.find(el => el.id === selectedElement.value.id);
+        if (updated) {
+            // Update the reference
+            selectedElement.value = {...updated};
+        }
+    }
 };
 
 const handleDrag = (e) => {
@@ -218,20 +258,29 @@ const handleDrag = (e) => {
     const canvasRect = e.currentTarget.parentElement.getBoundingClientRect();
     
     if (isDragging.value && selectedElement.value) {
-        // Calculate the new position, accounting for scale and drag offset
-        const newX = (e.clientX - canvasRect.left) / canvasSettings.value.displayScale - dragOffset.value.x;
-        const newY = (e.clientY - canvasRect.top) / canvasSettings.value.displayScale - dragOffset.value.y;
+        // Calculate mouse position relative to canvas
+        const mouseX = e.clientX - canvasRect.left;
+        const mouseY = e.clientY - canvasRect.top;
+        
+        // Convert to canvas coordinates with proper offset
+        const newX = (mouseX / canvasSettings.value.displayScale) - dragOffset.value.x;
+        const newY = (mouseY / canvasSettings.value.displayScale) - dragOffset.value.y;
 
+        // Update the element position
         elements.value = elements.value.map(el => {
             if (el.id === selectedElement.value.id) {
-                return { 
+                const updated = { 
                     ...el, 
                     x: newX,
                     y: newY
                 };
+                return updated;
             }
             return el;
         });
+        
+        // Update the selected element reference
+        updateSelectedElementReference();
     } 
     else if (isResizing.value && selectedElement.value) {
         const mouseX = (e.clientX - canvasRect.left) / canvasSettings.value.displayScale;
@@ -471,7 +520,7 @@ onUnmounted(() => {
                 class="p-2 rounded hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed" 
                 title="Undo"
             >
-                <ArrowCounterClockwise class="size-5" />
+                <RotateCcw class="size-5" />
             </button>
             <button 
                 @click="redo" 
@@ -479,7 +528,7 @@ onUnmounted(() => {
                 class="p-2 rounded hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed" 
                 title="Redo"
             >
-                <ArrowClockwise class="size-5" />
+                <RotateCw class="size-5" />
             </button>
             <button 
                 @click="saveDesign.flush" 
@@ -517,8 +566,7 @@ onUnmounted(() => {
                     top: '0.125in',
                     left: '0.125in',
                     right: '0.125in',
-                    bottom: '0.125in',
-                    transform: `scale(${canvasSettings.displayScale})`
+                    bottom: '0.125in'
                 }"
             />
 
@@ -529,17 +577,17 @@ onUnmounted(() => {
                 class="absolute cursor-move"
                 :class="{ 'ring-2 ring-blue-500 z-50': selectedElement?.id === element.id }"
                 :style="{
-                    left: `${element.x}px`,
-                    top: `${element.y}px`,
-                    width: `${element.width}px`,
-                    height: `${element.height}px`,
-                    transform: `scale(${canvasSettings.displayScale}) rotate(${element.rotation}deg)`,
+                    left: `${element.x * canvasSettings.displayScale}px`,
+                    top: `${element.y * canvasSettings.displayScale}px`,
+                    width: `${element.width * canvasSettings.displayScale}px`,
+                    height: `${element.height * canvasSettings.displayScale}px`,
+                    transform: `rotate(${element.rotation}deg)`,
                     transformOrigin: 'center center',
                     zIndex: element.zIndex
                 }"
                 @mousedown="startDragging($event, element)"
-                @click="handleElementClick(element, $event)"
-                @dblclick="handleTextEdit(element, $event)"
+                @click.stop="handleElementClick(element, $event)"
+                @dblclick.stop="handleTextEdit(element, $event)"
             >
                 <!-- Text Element -->
                 <div 
@@ -548,9 +596,12 @@ onUnmounted(() => {
                 >
                     <p 
                         :style="{
-                            fontSize: `${element.fontSize}px`,
+                            fontSize: `${element.fontSize * canvasSettings.displayScale}px`,
                             fontFamily: element.fontFamily,
-                            color: element.color
+                            color: element.color,
+                            lineHeight: '1.2',
+                            margin: '0',
+                            padding: '0'
                         }"
                     >
                         {{ element.content }}
@@ -573,7 +624,7 @@ onUnmounted(() => {
                     :style="{
                         backgroundColor: element.color || '#FFFFFF',
                         border: '2px solid ' + (element.borderColor || '#000000'),
-                        borderRadius: element.borderRadius ? `${element.borderRadius}px` : '0'
+                        borderRadius: element.borderRadius ? `${element.borderRadius * canvasSettings.displayScale}px` : '0'
                     }"
                 />
 
@@ -598,7 +649,7 @@ onUnmounted(() => {
         </div>
 
         <!-- Element Properties Panel (when an element is selected) -->
-        <div v-if="selectedElement" class="absolute bottom-4 left-4 bg-white rounded-lg shadow p-4 w-72">
+        <div v-if="selectedElement" class="absolute bottom-4 left-4 bg-white rounded-lg shadow p-4 w-72" @click.stop>
             <h3 class="text-sm font-medium mb-3">Element Properties</h3>
             
             <!-- Common properties -->
@@ -607,8 +658,11 @@ onUnmounted(() => {
                     <label class="block text-xs text-gray-500 mb-1">Position X</label>
                     <input 
                         type="number" 
-                        v-model.number="selectedElement.x" 
+                        :value="selectedElement.x"
+                        @input="updateElementProperty('x', parseFloat($event.target.value))"
                         @change="saveToHistory"
+                        @click.stop
+                        @keydown.stop
                         class="w-full px-2 py-1 border rounded text-sm"
                     >
                 </div>
@@ -616,8 +670,11 @@ onUnmounted(() => {
                     <label class="block text-xs text-gray-500 mb-1">Position Y</label>
                     <input 
                         type="number" 
-                        v-model.number="selectedElement.y" 
+                        :value="selectedElement.y"
+                        @input="updateElementProperty('y', parseFloat($event.target.value))"
                         @change="saveToHistory"
+                        @click.stop
+                        @keydown.stop
                         class="w-full px-2 py-1 border rounded text-sm"
                     >
                 </div>
@@ -625,8 +682,11 @@ onUnmounted(() => {
                     <label class="block text-xs text-gray-500 mb-1">Width</label>
                     <input 
                         type="number" 
-                        v-model.number="selectedElement.width" 
+                        :value="selectedElement.width"
+                        @input="updateElementProperty('width', parseFloat($event.target.value))"
                         @change="saveToHistory"
+                        @click.stop
+                        @keydown.stop
                         class="w-full px-2 py-1 border rounded text-sm"
                     >
                 </div>
@@ -634,8 +694,11 @@ onUnmounted(() => {
                     <label class="block text-xs text-gray-500 mb-1">Height</label>
                     <input 
                         type="number" 
-                        v-model.number="selectedElement.height" 
+                        :value="selectedElement.height"
+                        @input="updateElementProperty('height', parseFloat($event.target.value))"
                         @change="saveToHistory"
+                        @click.stop
+                        @keydown.stop
                         class="w-full px-2 py-1 border rounded text-sm"
                     >
                 </div>
@@ -643,8 +706,11 @@ onUnmounted(() => {
                     <label class="block text-xs text-gray-500 mb-1">Rotation</label>
                     <input 
                         type="number" 
-                        v-model.number="selectedElement.rotation" 
+                        :value="selectedElement.rotation"
+                        @input="updateElementProperty('rotation', parseFloat($event.target.value))"
                         @change="saveToHistory"
+                        @click.stop
+                        @keydown.stop
                         class="w-full px-2 py-1 border rounded text-sm"
                     >
                 </div>
@@ -656,8 +722,11 @@ onUnmounted(() => {
                     <label class="block text-xs text-gray-500 mb-1">Text</label>
                     <input 
                         type="text" 
-                        v-model="selectedElement.content" 
+                        :value="selectedElement.content"
+                        @input="updateElementProperty('content', $event.target.value)"
                         @change="saveToHistory"
+                        @click.stop
+                        @keydown.stop
                         class="w-full px-2 py-1 border rounded text-sm"
                     >
                 </div>
@@ -665,16 +734,22 @@ onUnmounted(() => {
                     <label class="block text-xs text-gray-500 mb-1">Font Size</label>
                     <input 
                         type="number" 
-                        v-model.number="selectedElement.fontSize" 
+                        :value="selectedElement.fontSize"
+                        @input="updateElementProperty('fontSize', parseFloat($event.target.value))"
                         @change="saveToHistory"
+                        @click.stop
+                        @keydown.stop
                         class="w-full px-2 py-1 border rounded text-sm"
                     >
                 </div>
                 <div>
                     <label class="block text-xs text-gray-500 mb-1">Font Family</label>
                     <select 
-                        v-model="selectedElement.fontFamily" 
+                        :value="selectedElement.fontFamily"
+                        @input="updateElementProperty('fontFamily', $event.target.value)"
                         @change="saveToHistory"
+                        @click.stop
+                        @keydown.stop
                         class="w-full px-2 py-1 border rounded text-sm"
                     >
                         <option value="Arial">Arial</option>
@@ -688,8 +763,11 @@ onUnmounted(() => {
                     <label class="block text-xs text-gray-500 mb-1">Color</label>
                     <input 
                         type="color" 
-                        v-model="selectedElement.color" 
+                        :value="selectedElement.color" 
+                        @input="updateElementProperty('color', $event.target.value)"
                         @change="saveToHistory"
+                        @click.stop
+                        @keydown.stop
                         class="w-full h-8"
                     >
                 </div>
@@ -701,8 +779,10 @@ onUnmounted(() => {
                     <label class="block text-xs text-gray-500 mb-1">Fill Color</label>
                     <input 
                         type="color" 
-                        v-model="selectedElement.color" 
+                        :value="selectedElement.color" 
                         @change="saveToHistory"
+                        @click.stop
+                        @keydown.stop
                         class="w-full h-8"
                     >
                 </div>
@@ -710,8 +790,11 @@ onUnmounted(() => {
                     <label class="block text-xs text-gray-500 mb-1">Border Color</label>
                     <input 
                         type="color" 
-                        v-model="selectedElement.borderColor" 
+                        :value="selectedElement.borderColor" 
+                        @input="updateElementProperty('borderColor', $event.target.value)"
                         @change="saveToHistory"
+                        @click.stop
+                        @keydown.stop
                         class="w-full h-8"
                     >
                 </div>
@@ -721,8 +804,11 @@ onUnmounted(() => {
                         type="range" 
                         min="0" 
                         max="100" 
-                        v-model.number="selectedElement.borderRadius" 
+                        :value="selectedElement.borderRadius" 
+                        @input="updateElementProperty('borderRadius', parseFloat($event.target.value))"
                         @change="saveToHistory"
+                        @click.stop
+                        @keydown.stop
                         class="w-full"
                     >
                 </div>

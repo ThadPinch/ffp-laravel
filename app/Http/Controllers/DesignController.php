@@ -13,14 +13,21 @@ use Intervention\Image\Facades\Image;
 class DesignController extends Controller
 {
     // Show create design page
-    public function create(Request $request)
-    {
-        $productId = $request->query('product_id');
+    // public function create(Request $request)
+    // {
+    //     $productId = $request->query('product_id');
         
+    //     return Inertia::render('Design', [
+    //         'products' => Product::all(),
+    //         'selectedProductId' => $productId,
+    //         'design' => null
+    //     ]);
+    // }
+
+    public function create()
+    {
         return Inertia::render('Design', [
-            'products' => Product::all(),
-            'selectedProductId' => $productId,
-            'design' => null
+            'products' => Product::all()
         ]);
     }
     

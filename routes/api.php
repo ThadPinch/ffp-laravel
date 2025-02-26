@@ -3,9 +3,10 @@
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\DesignController;
+use App\Http\Controllers\DesignAIController;
 
-// API routes for authenticated users
-Route::middleware('auth:sanctum')->group(function () {
+// API routes
+Route::middleware(['web', 'auth'])->prefix('api')->group(function () {
     // User info
     Route::get('/user', function (Request $request) {
         return $request->user();
@@ -23,4 +24,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/{design}/versions', [DesignController::class, 'versions']);
         Route::post('/{design}/versions/{version}/restore', [DesignController::class, 'restoreVersion']);
     });
+    
+    // AI routes
+    Route::post('/design-ai/edit', [DesignAIController::class, 'edit']);
 });
