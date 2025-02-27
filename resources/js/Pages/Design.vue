@@ -1,11 +1,11 @@
 <script setup>
-import { ref, useForm, computed, onMounted, watch } from 'vue';
-// import { useForm } from '@inertiajs/inertia-vue3';
+import { ref, computed, onMounted, watch } from 'vue';
 import axios from 'axios';
 import BuilderLayout from '@/Layouts/BuilderLayout.vue';
 import BuilderSidebar from '@/Components/Builder/BuilderSidebar.vue';
 import BuilderCanvas from '@/Components/Builder/BuilderCanvas.vue';
 import ProductSelector from '@/Components/Builder/ProductSelector.vue';
+import ExistingDesignsSelector from '@/Components/Builder/ExistingDesignsSelector.vue';
 import ChatPanel from '@/Components/Builder/ChatPanel.vue';
 import VersionHistory from '@/Components/Builder/VersionHistory.vue';
 import { Menu, Save, ChevronLeft } from 'lucide-vue-next';
@@ -25,16 +25,19 @@ const props = defineProps({
     }
 });
 
-const isEditing = computed(() => !!props.design);
+// Using ref instead of computed to allow manual setting when loading existing design
+const isEditing = ref(!!props.design);
 const designName = ref(isEditing.value ? props.design.name : 'Untitled Design');
 const isSidebarOpen = ref(false);
 const activeTab = ref('elements');
 const showProductSelector = ref(!props.selectedProductId && !isEditing.value);
+const showExistingDesignsSelector = ref(false);
 const selectedProduct = ref(null);
 const elements = ref([]);
 const isSaving = ref(false);
 const saveStatus = ref(''); // '', 'saving', 'saved', 'error'
 const showVersions = ref(false);
+const designId = ref(isEditing.value ? props.design.id : null);
 
 // Handle product selection or load existing product
 onMounted(() => {
@@ -62,6 +65,56 @@ const setActiveTab = (tab) => {
 const handleProductSelect = (product) => {
     selectedProduct.value = product;
     showProductSelector.value = false;
+    
+    // Show existing designs selector after product selection
+    showExistingDesignsSelector.value = true;
+};
+
+const handleCreateNewDesign = (product) => {
+    // Start with a blank design for the selected product
+    selectedProduct.value = product;
+    elements.value = [];
+    designId.value = null;
+    designName.value = 'Untitled Design';
+};
+
+const handleSelectExistingDesign = async (design) => {
+    // Close the selector first
+    showExistingDesignsSelector.value = false;
+    
+    try {
+        console.log('Loading design with ID:', design.id);
+        
+        // Set basic info first
+        designId.value = design.id;
+        designName.value = design.name;
+        
+        // Cancel any pending auto-save
+        if (saveTimeout) {
+            clearTimeout(saveTimeout);
+        }
+        
+        // Fetch the complete design data to ensure we have everything we need
+        const response = await axios.get(`/api/designs/${design.id}`);
+        const fullDesign = response.data;
+        
+        console.log('Successfully fetched design data');
+        
+        // Set the selected product
+        selectedProduct.value = props.products.find(p => p.id === fullDesign.product_id);
+        
+        // Set elements last to prevent unwanted auto-save triggers
+        elements.value = fullDesign.elements || [];
+        
+        console.log('Design loaded successfully:', designId.value);
+    } catch (error) {
+        console.error('Error loading design:', error);
+        // Show error notification
+        saveStatus.value = 'error';
+        setTimeout(() => {
+            saveStatus.value = '';
+        }, 3000);
+    }
 };
 
 // Save design to server
@@ -79,12 +132,19 @@ const saveDesign = async (shouldNavigate = false) => {
         
         let response;
         
-        if (isEditing.value) {
+        console.log('Saving design. Design ID:', designId.value);
+        
+        if (designId.value) {
             // Update existing design
-            response = await axios.put(`/api/designs/${props.design.id}`, designData);
+            console.log('Updating existing design:', designId.value);
+            response = await axios.put(`/api/designs/${designId.value}`, designData);
         } else {
             // Create new design
+            console.log('Creating new design');
             response = await axios.post('/api/designs', designData);
+            // Set the design ID after creation for new designs
+            designId.value = response.data.id;
+            console.log('Created design with ID:', designId.value);
         }
         
         saveStatus.value = 'saved';
@@ -116,8 +176,23 @@ watch(elements, () => {
     if (saveTimeout) clearTimeout(saveTimeout);
     
     saveTimeout = setTimeout(() => {
-        if (selectedProduct.value) {
-            saveDesign();
+        if (selectedProduct.value && elements.value.length > 0) {
+            // Log the current state before saving
+            console.log('Auto-saving design. Current state:', {
+                designId: designId.value,
+                designName: designName.value,
+                elementsCount: elements.value.length
+            });
+            
+            saveDesign().then(result => {
+                // Ensure we have a design ID for chat functionality
+                if (result && result.id) {
+                    if (designId.value !== result.id) {
+                        console.log('Design ID updated from', designId.value, 'to', result.id);
+                        designId.value = result.id;
+                    }
+                }
+            });
         }
     }, 5000); // Auto-save after 5 seconds of inactivity
 }, { deep: true });
@@ -149,6 +224,15 @@ const handleRestoreVersion = async (version) => {
             v-model="showProductSelector"
             :products="products"
             @select="handleProductSelect"
+        />
+        
+        <!-- Existing Designs Selector Modal -->
+        <ExistingDesignsSelector
+            v-if="selectedProduct && !isEditing"
+            v-model="showExistingDesignsSelector"
+            :selected-product="selectedProduct"
+            @select-existing="handleSelectExistingDesign"
+            @create-new="handleCreateNewDesign"
         />
         
         <!-- Version History Sidebar -->
@@ -213,16 +297,13 @@ const handleRestoreVersion = async (version) => {
                 <BuilderSidebar
                     v-model:is-open="isSidebarOpen"
                     v-model:active-tab="activeTab"
+                    :elements="elements"
+                    :product="selectedProduct"
+                    :design-id="designId"
+                    @update:elements="elements = $event"
                     class="w-full sm:w-80 flex-shrink-0"
                 >
-                    <!-- Dynamic sidebar content based on active tab -->
-                    <template v-if="activeTab === 'chat'">
-                        <ChatPanel 
-                            :elements="elements"
-                            :product="selectedProduct"
-                            @update:elements="elements = $event"
-                        />
-                    </template>
+                    <!-- You no longer need the conditional template here since we handle it in the sidebar -->
                 </BuilderSidebar>
 
                 <!-- Main Canvas Area -->

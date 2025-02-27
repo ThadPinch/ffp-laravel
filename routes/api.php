@@ -3,7 +3,7 @@
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\DesignController;
-use App\Http\Controllers\DesignAIController;
+use App\Http\Controllers\DesignChatController;
 
 // API routes
 Route::middleware(['web', 'auth'])->prefix('api')->group(function () {
@@ -23,8 +23,10 @@ Route::middleware(['web', 'auth'])->prefix('api')->group(function () {
         // Design versions
         Route::get('/{design}/versions', [DesignController::class, 'versions']);
         Route::post('/{design}/versions/{version}/restore', [DesignController::class, 'restoreVersion']);
+
+        // Design chat
+        Route::get('/{design}/chat', [DesignChatController::class, 'getMessages']);
+        Route::post('/{design}/chat', [DesignChatController::class, 'sendMessage']);
     });
     
-    // AI routes
-    Route::post('/design-ai/edit', [DesignAIController::class, 'edit']);
 });

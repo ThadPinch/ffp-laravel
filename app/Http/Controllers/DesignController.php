@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Design;
 use App\Models\Product;
+use App\Models\DesignVersion;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Storage;
@@ -13,17 +14,6 @@ use Intervention\Image\Facades\Image;
 class DesignController extends Controller
 {
     // Show create design page
-    // public function create(Request $request)
-    // {
-    //     $productId = $request->query('product_id');
-        
-    //     return Inertia::render('Design', [
-    //         'products' => Product::all(),
-    //         'selectedProductId' => $productId,
-    //         'design' => null
-    //     ]);
-    // }
-
     public function create()
     {
         return Inertia::render('Design', [
@@ -34,7 +24,10 @@ class DesignController extends Controller
     // Edit an existing design
     public function edit(Design $design)
     {
-        $this->authorize('update', $design);
+        // Check if user is the owner of the design
+        if ($design->user_id !== Auth::id()) {
+            abort(403, 'Unauthorized');
+        }
         
         return Inertia::render('Design', [
             'products' => Product::all(),
@@ -74,7 +67,10 @@ class DesignController extends Controller
     // API endpoint to update a design
     public function update(Request $request, Design $design)
     {
-        $this->authorize('update', $design);
+        // Check if user is the owner of the design
+        if ($design->user_id !== Auth::id()) {
+            return response()->json(['message' => 'Unauthorized'], 403);
+        }
         
         $request->validate([
             'elements' => 'required|array',
@@ -85,7 +81,7 @@ class DesignController extends Controller
         
         // Check if elements have changed and we should create a version
         $elementsChanged = json_encode($design->elements) !== json_encode($request->elements);
-        $shouldCreateVersion = $request->create_version && $elementsChanged;
+        $shouldCreateVersion = $request->input('create_version', false) && $elementsChanged;
         
         // Update design
         $design->elements = $request->elements;
@@ -101,27 +97,50 @@ class DesignController extends Controller
         
         // Create a new version if requested
         if ($shouldCreateVersion) {
-            $design->createVersion($request->version_comment);
+            $design->createVersion($request->input('version_comment', 'Update'));
         }
         
         return response()->json($design);
     }
     
     // API endpoint to list designs for current user
-    public function index()
+    public function index(Request $request)
     {
-        $designs = Design::where('user_id', Auth::id())
-            ->with('product')
-            ->orderBy('updated_at', 'desc')
+        $query = Design::where('user_id', Auth::id())
+            ->with('product');
+            
+        // Add filter by product_id if provided
+        if ($request->has('product_id')) {
+            $query->where('product_id', $request->product_id);
+        }
+        
+        $designs = $query->orderBy('updated_at', 'desc')
             ->paginate(12);
             
         return response()->json($designs);
     }
     
+    // API endpoint to get a single design with all details
+    public function show(Design $design)
+    {
+        // Check if user is the owner or the design is a template
+        if ($design->user_id !== Auth::id() && !($design->is_template ?? false)) {
+            return response()->json(['message' => 'Unauthorized'], 403);
+        }
+        
+        // Load associated product
+        $design->load('product');
+        
+        return response()->json($design);
+    }
+    
     // API endpoint to get versions of a design
     public function versions(Design $design)
     {
-        $this->authorize('view', $design);
+        // Check if user is the owner of the design
+        if ($design->user_id !== Auth::id()) {
+            return response()->json(['message' => 'Unauthorized'], 403);
+        }
         
         $versions = $design->versions()
             ->orderBy('created_at', 'desc')
@@ -133,7 +152,10 @@ class DesignController extends Controller
     // API endpoint to restore a specific version
     public function restoreVersion(Design $design, DesignVersion $version)
     {
-        $this->authorize('update', $design);
+        // Check if user is the owner of the design
+        if ($design->user_id !== Auth::id()) {
+            return response()->json(['message' => 'Unauthorized'], 403);
+        }
         
         // Create a new version first to save the current state
         $design->createVersion('Auto-saved before restoring version #' . $version->id);
@@ -173,7 +195,10 @@ class DesignController extends Controller
     // Delete a design
     public function destroy(Design $design)
     {
-        $this->authorize('delete', $design);
+        // Check if user is the owner of the design
+        if ($design->user_id !== Auth::id()) {
+            return response()->json(['message' => 'Unauthorized'], 403);
+        }
         
         // Delete associated thumbnail
         if ($design->thumbnail) {

@@ -12,10 +12,23 @@ const props = defineProps({
     activeTab: {
         type: String,
         required: true
+    },
+    // Add these new props
+    elements: {
+        type: Array,
+        default: () => []
+    },
+    product: {
+        type: Object,
+        default: () => ({})
+    },
+    designId: {
+        type: [Number, String],
+        default: null
     }
 });
 
-const emit = defineEmits(['update:isOpen', 'update:activeTab']);
+const emit = defineEmits(['update:isOpen', 'update:activeTab', 'update:elements']);
 
 const tabs = [
     { id: 'elements', icon: LayoutGrid, label: 'Elements' },
@@ -28,6 +41,11 @@ const sidebarClasses = computed(() => {
         '-translate-x-full': !props.isOpen,
         'sm:translate-x-0': true
     };
+});
+
+// Check if we have the necessary data for chat
+const chatConfigured = computed(() => {
+    return props.designId && props.product && Object.keys(props.product).length > 0;
 });
 </script>
 
@@ -62,11 +80,23 @@ const sidebarClasses = computed(() => {
                 <X class="size-5" />
             </button>
         </div>
-
+        
         <!-- Panel content -->
         <div class="h-[calc(100%-3.5rem)] overflow-y-auto">
             <ElementsPanel v-if="activeTab === 'elements'" />
-            <ChatPanel v-else-if="activeTab === 'chat'" />
+            <template v-else-if="activeTab === 'chat'">
+                <!-- Show message if chat can't be configured -->
+                <div v-if="!chatConfigured" class="p-4 text-center text-gray-500">
+                    <p>Please save your design first to use the chat feature.</p>
+                </div>
+                <ChatPanel 
+                    v-else
+                    :elements="elements"
+                    :product="product"
+                    :design-id="designId"
+                    @update:elements="$emit('update:elements', $event)"
+                />
+            </template>
         </div>
     </div>
 </template>

@@ -11,17 +11,47 @@ const props = defineProps({
     product: {
         type: Object,
         required: true
+    },
+    designId: {
+        type: [Number, String],
+        required: true
     }
 });
 
 const emit = defineEmits(['update:elements']);
 
-const messages = ref([
-    { id: 1, role: 'assistant', content: 'Hi! I\'m here to help you with your design. What would you like to create or modify?' }
-]);
-
+const messages = ref([]);
 const newMessage = ref('');
 const isProcessing = ref(false);
+const messagesLoaded = ref(false);
+
+// Fetch existing messages on component mount
+onMounted(async () => {
+    try {
+        const response = await axios.get(`/api/designs/${props.designId}/chat`);
+        messages.value = response.data;
+        messagesLoaded.value = true;
+        
+        // If no messages yet, add a welcome message
+        if (messages.value.length === 0) {
+            messages.value.push({
+                id: Date.now(),
+                role: 'assistant',
+                content: 'Hi! I\'m here to help you with your design. What would you like to create or modify?'
+            });
+        }
+        
+        scrollToBottom();
+    } catch (error) {
+        console.error('Error fetching chat messages:', error);
+        messages.value = [{
+            id: Date.now(),
+            role: 'assistant',
+            content: 'Hi! I\'m here to help you with your design. What would you like to create or modify?'
+        }];
+        messagesLoaded.value = true;
+    }
+});
 
 // Watch for changes in elements from parent component
 watch(() => props.elements, (newElements) => {
@@ -32,7 +62,7 @@ watch(() => props.elements, (newElements) => {
 const sendMessage = async () => {
     if (!newMessage.value.trim() || isProcessing.value) return;
     
-    // Add user message
+    // Add user message to the UI
     const userMessage = {
         id: Date.now(),
         role: 'user',
@@ -55,34 +85,45 @@ const sendMessage = async () => {
             isThinking: true
         });
         
-        // Prepare data for AI service
-        const requestData = {
-            prompt: userRequest,
-            currentElements: props.elements,
-            productInfo: {
-                name: props.product.name,
-                width: props.product.finished_width,
-                length: props.product.finished_length
-            }
-        };
+        scrollToBottom();
         
-        // Call the AI service
-        const response = await axios.post('/api/design-ai/edit', requestData);
+        // Send the message to our backend
+        const response = await axios.post(`/api/designs/${props.designId}/chat`, {
+            message: userRequest
+        });
         
         // Remove the thinking message
         messages.value = messages.value.filter(m => m.id !== thinkingId);
         
-        // Add AI response
+        // Handle JSON response from AI
+        let messageContent, designElements;
+
+        try {
+            // Parse the content as JSON
+            const parsedContent = JSON.parse(response.data.message.content);
+            messageContent = parsedContent.message;
+            designElements = parsedContent.design;
+        } catch (e) {
+            // If parsing fails, use the original message
+            console.error('Failed to parse AI response as JSON:', e);
+            messageContent = response.data.message.content;
+            designElements = response.data.elements;
+        }
+        
+        // Add AI response with the message portion
         messages.value.push({
-            id: Date.now() + 2,
+            id: response.data.message.id,
             role: 'assistant',
-            content: response.data.message
+            content: messageContent,
+            created_at: response.data.message.created_at
         });
         
-        // Update elements if AI provided changes
-        if (response.data.elements) {
-            emit('update:elements', response.data.elements);
+        // Update elements if design data is provided
+        if (designElements && Array.isArray(designElements) && designElements.length > 0) {
+            emit('update:elements', designElements);
         }
+        
+        scrollToBottom();
     } catch (error) {
         console.error('Error processing AI request:', error);
         
@@ -95,26 +136,39 @@ const sendMessage = async () => {
             role: 'assistant',
             content: 'Sorry, I encountered an error while processing your request. Please try again.'
         });
+        
+        scrollToBottom();
     } finally {
         isProcessing.value = false;
     }
 };
 
-// Auto-scroll to bottom when messages change
+// Auto-scroll to bottom
 const messagesContainer = ref(null);
-watch(messages, () => {
+const scrollToBottom = () => {
     setTimeout(() => {
         if (messagesContainer.value) {
             messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight;
         }
     }, 100);
-}, { deep: true });
+};
+
+// Format timestamp
+const formatTime = (timestamp) => {
+    if (!timestamp) return '';
+    const date = new Date(timestamp);
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+};
 </script>
 
 <template>
     <div class="flex flex-col h-full">
-        <!-- Messages area -->
-        <div ref="messagesContainer" class="flex-1 overflow-y-auto p-4 space-y-4">
+        <!-- Messages area with loading state -->
+        <div v-if="!messagesLoaded" class="flex-1 flex items-center justify-center">
+            <div class="text-gray-500">Loading messages...</div>
+        </div>
+        
+        <div v-else ref="messagesContainer" class="flex-1 overflow-y-auto p-4 space-y-4">
             <div
                 v-for="message in messages"
                 :key="message.id"
@@ -138,7 +192,10 @@ watch(messages, () => {
                         </span>
                     </div>
                     <div v-else>
-                        {{ message.content }}
+                        <div class="text-sm">{{ message.content }}</div>
+                        <div v-if="message.created_at" class="text-xs opacity-75 mt-1">
+                            {{ formatTime(message.created_at) }}
+                        </div>
                     </div>
                 </div>
             </div>
@@ -153,12 +210,12 @@ watch(messages, () => {
                     placeholder="Ask me to edit your design..."
                     class="flex-1 rounded-lg border border-gray-300 px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
                     @keyup.enter="sendMessage"
-                    :disabled="isProcessing"
+                    :disabled="isProcessing || !messagesLoaded"
                 />
                 <button
                     @click="sendMessage"
                     class="p-2 rounded-lg bg-blue-500 text-white hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                    :disabled="isProcessing || !newMessage.trim()"
+                    :disabled="isProcessing || !newMessage.trim() || !messagesLoaded"
                 >
                     <Send class="size-5" />
                 </button>

@@ -17,7 +17,7 @@ class DesignAIController extends Controller
         ]);
 
         try {
-            // In a real application, you would connect to an AI service like OpenAI
+            // In a real application, you would connect to an AI service like Anthropic
             // For this example, we'll simulate some basic responses
             
             $prompt = strtolower($request->prompt);
