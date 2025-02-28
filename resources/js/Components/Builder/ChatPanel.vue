@@ -25,11 +25,38 @@ const newMessage = ref('');
 const isProcessing = ref(false);
 const messagesLoaded = ref(false);
 
+// Process message content to ensure it's properly formatted
+const processMessageContent = (message) => {
+    if (!message) return '';
+    
+    // If content is already a string, return it
+    if (typeof message.content === 'string') {
+        try {
+            // Check if the string is JSON
+            const parsedContent = JSON.parse(message.content);
+            // If it has a message property, use that
+            if (parsedContent && parsedContent.message) {
+                return parsedContent.message;
+            }
+        } catch (e) {
+            // Not JSON, just return the original content
+            return message.content;
+        }
+    }
+    
+    // Return original content as fallback
+    return message.content;
+};
+
 // Fetch existing messages on component mount
 onMounted(async () => {
     try {
         const response = await axios.get(`/api/designs/${props.designId}/chat`);
-        messages.value = response.data;
+        // Process each message to ensure proper content formatting
+        messages.value = response.data.map(message => ({
+            ...message,
+            content: processMessageContent(message)
+        }));
         messagesLoaded.value = true;
         
         // If no messages yet, add a welcome message
@@ -58,6 +85,41 @@ watch(() => props.elements, (newElements) => {
     // This ensures that if elements are modified outside the chat,
     // the chat component is aware of the current state
 }, { deep: true });
+
+// Watch for changes in the design ID
+watch(() => props.designId, async (newDesignId, oldDesignId) => {
+    if (newDesignId !== oldDesignId) {
+        messagesLoaded.value = false;
+        try {
+            const response = await axios.get(`/api/designs/${newDesignId}/chat`);
+            // Process each message to ensure proper content formatting
+            messages.value = response.data.map(message => ({
+                ...message,
+                content: processMessageContent(message)
+            }));
+            messagesLoaded.value = true;
+            
+            // If no messages yet, add a welcome message
+            if (messages.value.length === 0) {
+                messages.value.push({
+                    id: Date.now(),
+                    role: 'assistant',
+                    content: 'Hi! I\'m here to help you with your design. What would you like to create or modify?'
+                });
+            }
+            
+            scrollToBottom();
+        } catch (error) {
+            console.error('Error fetching chat messages for new design:', error);
+            messages.value = [{
+                id: Date.now(),
+                role: 'assistant',
+                content: 'Hi! I\'m here to help you with your design. What would you like to create or modify?'
+            }];
+            messagesLoaded.value = true;
+        }
+    }
+}, { immediate: false });
 
 const sendMessage = async () => {
     if (!newMessage.value.trim() || isProcessing.value) return;

@@ -3,6 +3,7 @@ import { ref, onMounted, computed } from 'vue';
 import { Dialog, DialogPanel } from '@headlessui/vue';
 import { Plus, ArrowLeft, Loader } from 'lucide-vue-next';
 import axios from 'axios';
+import DesignActionModal from './DesignActionModal.vue'; // Import the new modal component
 
 const props = defineProps({
     modelValue: {
@@ -15,11 +16,14 @@ const props = defineProps({
     }
 });
 
-const emit = defineEmits(['update:modelValue', 'selectExisting', 'createNew']);
+// Add new emit events for editing original and creating copy
+const emit = defineEmits(['update:modelValue', 'selectExisting', 'createNew', 'back', 'editOriginal', 'createCopy']);
 
 const isLoading = ref(true);
 const existingDesigns = ref([]);
 const error = ref(null);
+const showActionModal = ref(false);
+const selectedDesign = ref(null);
 
 // Fetch designs for the selected product
 onMounted(async () => {
@@ -44,11 +48,29 @@ const createNewDesign = () => {
     emit('update:modelValue', false);
 };
 
-// Select an existing design to continue
-const selectExistingDesign = (design) => {
-    console.log('Selected design:', design.id, design.name);
-    emit('selectExisting', design);
+// Select an existing design to open action modal
+const handleDesignClick = (design) => {
+    selectedDesign.value = design;
+    showActionModal.value = true;
+};
+
+// Handle edit original action
+const handleEditOriginal = (design) => {
+    console.log('Edit original design:', design.id, design.name);
+    emit('editOriginal', design);
     emit('update:modelValue', false);
+};
+
+// Handle create copy action
+const handleCreateCopy = (design) => {
+    console.log('Create copy of design:', design.id, design.name);
+    emit('createCopy', design);
+    emit('update:modelValue', false);
+};
+
+// Handle back button click - emit 'back' event
+const handleBackClick = () => {
+    emit('back');
 };
 
 // Format date for display
@@ -74,7 +96,7 @@ const hasExistingDesigns = computed(() => existingDesigns.value.length > 0);
                     <!-- Header with back button -->
                     <div class="flex items-center mb-6">
                         <button 
-                            @click="$emit('update:modelValue', false)" 
+                            @click="handleBackClick()" 
                             class="mr-3 p-1 rounded-full hover:bg-gray-100"
                         >
                             <ArrowLeft class="size-5 text-gray-600" />
@@ -123,7 +145,7 @@ const hasExistingDesigns = computed(() => existingDesigns.value.length > 0);
                                     v-for="design in existingDesigns"
                                     :key="design.id"
                                     class="border rounded-lg overflow-hidden hover:border-blue-500 cursor-pointer transition-colors"
-                                    @click="selectExistingDesign(design)"
+                                    @click="handleDesignClick(design)"
                                 >
                                     <div class="aspect-square bg-gray-100 relative">
                                         <img
@@ -155,4 +177,13 @@ const hasExistingDesigns = computed(() => existingDesigns.value.length > 0);
             </DialogPanel>
         </div>
     </Dialog>
+
+    <!-- Design Action Modal -->
+    <DesignActionModal
+        v-if="selectedDesign"
+        v-model="showActionModal"
+        :design="selectedDesign"
+        @edit-original="handleEditOriginal"
+        @create-copy="handleCreateCopy"
+    />
 </template>

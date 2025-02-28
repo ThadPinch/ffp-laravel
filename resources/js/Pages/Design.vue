@@ -1,3 +1,5 @@
+<!-- design.vue (updated) -->
+
 <script setup>
 import { ref, computed, onMounted, watch } from 'vue';
 import axios from 'axios';
@@ -70,6 +72,17 @@ const handleProductSelect = (product) => {
     showExistingDesignsSelector.value = true;
 };
 
+const handleDesignSelectorBack = () => {
+    // Hide the existing designs selector
+    showExistingDesignsSelector.value = false;
+    
+    // Show the product selector again
+    showProductSelector.value = true;
+    
+    // Reset selected product
+    selectedProduct.value = null;
+};
+
 const handleCreateNewDesign = (product) => {
     // Start with a blank design for the selected product
     selectedProduct.value = product;
@@ -78,16 +91,15 @@ const handleCreateNewDesign = (product) => {
     designName.value = 'Untitled Design';
 };
 
-const handleSelectExistingDesign = async (design) => {
-    // Close the selector first
-    showExistingDesignsSelector.value = false;
-    
+// Load and edit the original design
+const handleEditOriginal = async (design) => {
     try {
-        console.log('Loading design with ID:', design.id);
+        console.log('Loading original design with ID:', design.id);
         
         // Set basic info first
         designId.value = design.id;
         designName.value = design.name;
+        isEditing.value = true;
         
         // Cancel any pending auto-save
         if (saveTimeout) {
@@ -106,7 +118,7 @@ const handleSelectExistingDesign = async (design) => {
         // Set elements last to prevent unwanted auto-save triggers
         elements.value = fullDesign.elements || [];
         
-        console.log('Design loaded successfully:', designId.value);
+        console.log('Original design loaded successfully:', designId.value);
     } catch (error) {
         console.error('Error loading design:', error);
         // Show error notification
@@ -115,6 +127,44 @@ const handleSelectExistingDesign = async (design) => {
             saveStatus.value = '';
         }, 3000);
     }
+};
+
+// Create a copy of the design and edit the copy
+const handleCreateCopy = async (design) => {
+    try {
+        console.log('Creating a copy of design ID:', design.id);
+        
+        // Fetch the complete design data to ensure we have everything we need
+        const response = await axios.get(`/api/designs/${design.id}`);
+        const fullDesign = response.data;
+        
+        // Set up a new design based on the existing one
+        selectedProduct.value = props.products.find(p => p.id === fullDesign.product_id);
+        elements.value = fullDesign.elements || [];
+        designName.value = `${fullDesign.name} (Copy)`;
+        designId.value = null; // This will force a new design to be created
+        isEditing.value = false;
+        
+        // Auto-save the new copy soon after creating it
+        setTimeout(() => {
+            saveDesign();
+        }, 1000);
+        
+        console.log('Design copy created');
+    } catch (error) {
+        console.error('Error creating copy of design:', error);
+        saveStatus.value = 'error';
+        setTimeout(() => {
+            saveStatus.value = '';
+        }, 3000);
+    }
+};
+
+// Handle selecting existing design (deprecated - just for backwards compatibility)
+const handleSelectExistingDesign = async (design) => {
+    // This old method now redirects to edit the original by default
+    // for backwards compatibility
+    await handleEditOriginal(design);
 };
 
 // Save design to server
@@ -144,6 +194,7 @@ const saveDesign = async (shouldNavigate = false) => {
             response = await axios.post('/api/designs', designData);
             // Set the design ID after creation for new designs
             designId.value = response.data.id;
+            isEditing.value = true; // Now we're editing an existing design
             console.log('Created design with ID:', designId.value);
         }
         
@@ -200,7 +251,8 @@ watch(elements, () => {
 // Handle version restore
 const handleRestoreVersion = async (version) => {
     try {
-        const response = await axios.post(`/api/designs/${props.design.id}/versions/${version.id}/restore`);
+        // const response = await axios.post(`/api/designs/${props.design.id}/versions/${version.id}/restore`);
+        const response = await axios.post(`/api/designs/${props.designId}/versions/${version.id}/restore`);
         elements.value = response.data.elements;
         saveStatus.value = 'saved';
         showVersions.value = false;
@@ -233,13 +285,16 @@ const handleRestoreVersion = async (version) => {
             :selected-product="selectedProduct"
             @select-existing="handleSelectExistingDesign"
             @create-new="handleCreateNewDesign"
+            @back="handleDesignSelectorBack"
+            @edit-original="handleEditOriginal"
+            @create-copy="handleCreateCopy"
         />
         
         <!-- Version History Sidebar -->
         <VersionHistory
             v-if="isEditing"
             v-model="showVersions"
-            :design-id="design.id"
+            :design-id="designId"
             @restore="handleRestoreVersion"
         />
 
@@ -279,7 +334,8 @@ const handleRestoreVersion = async (version) => {
                         :disabled="isSaving"
                     >
                         <Save class="size-4 mr-1" />
-                        <span>{{ isEditing ? 'Save' : 'Save & Exit' }}</span>
+                        <!-- <span>{{ isEditing ? 'Save' : 'Save & Exit' }}</span> -->
+                         <span>Save & Exit</span>
                     </button>
                 </div>
             </div>
@@ -287,7 +343,7 @@ const handleRestoreVersion = async (version) => {
             <!-- Mobile Sidebar Toggle -->
             <button 
                 @click="toggleSidebar"
-                class="fixed z-40 bottom-4 right-4 sm:hidden bg-white p-3 rounded-full shadow-lg border border-gray-200"
+                class="fixed z-40 bottom-4 left-4 sm:hidden bg-white p-3 rounded-full shadow-lg border border-gray-200"
             >
                 <Menu class="size-6" />
             </button>
@@ -311,6 +367,8 @@ const handleRestoreVersion = async (version) => {
                     <BuilderCanvas 
                         :product="selectedProduct"
                         v-model="elements"
+                        :design-id="designId"
+                        @update:designId="designId = $event"
                     />
                 </div>
             </div>

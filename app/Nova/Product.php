@@ -84,6 +84,13 @@ class Product extends Resource
                 ->prunable()
                 ->nullable()
                 ->help('Upload product image'),
+
+            Number::make('Bleed')
+                ->step(0.01)
+                ->rules('nullable', 'numeric', 'min:0')
+                ->help('Bleed in inches')
+                ->nullable()
+                ->sortable(),
         ];
     }
 

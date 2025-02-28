@@ -1,24 +1,9 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
 import { 
-    Type, 
-    Image, 
-    Square, 
-    Save, 
-    RotateCw, 
-    RotateCcw, 
-    Move, 
-    Layers, 
-    Palette, 
-    Ruler, 
-    Text, 
-    Settings, 
-    ZoomIn, 
-    ZoomOut, 
-    Maximize,
-    X,
-    ChevronDown,
-    ChevronUp
+    Type, Image, Square, Save, RotateCw, RotateCcw, Move, Layers, 
+    Palette, Ruler, Text, Settings, ZoomIn, ZoomOut, Maximize, 
+    ChevronDown, ChevronUp, MousePointer2 
 } from 'lucide-vue-next';
 import axios from 'axios';
 import { debounce } from 'lodash';
@@ -31,10 +16,14 @@ const props = defineProps({
     modelValue: {
         type: Array,
         default: () => []
+    },
+    designId: {
+        type: Number,
+        default: null
     }
 });
 
-const emit = defineEmits(['update:modelValue']);
+const emit = defineEmits(['update:modelValue', 'update:designId']);
 
 // Create a local copy of elements from modelValue
 const elements = ref([...props.modelValue]);
@@ -67,6 +56,68 @@ const zoomStep = 0.1;
 const activePropertyTab = ref('transform'); // 'transform', 'style', 'text', 'layer'
 const propertiesPanelExpanded = ref(true);
 
+// Pan-related refs
+const isPanning = ref(false);
+const panOffset = ref({ x: 0, y: 0 });
+const panStartPosition = ref({ x: 0, y: 0 });
+const isPanDragging = ref(false);
+
+const useMetric = ref(false); // Default to inches
+const toggleUnitSystem = () => {
+    useMetric.value = !useMetric.value;
+};
+
+const pixelsToDisplayUnits = (pixels) => {
+    const inches = pixels / canvasSettings.value.dpi;
+    if (useMetric.value) {
+        // Convert inches to centimeters (1 inch = 2.54 cm)
+        return (inches * 2.54).toFixed(2);
+    } else {
+        return inches.toFixed(2);
+    }
+};
+
+const displayUnitsToPixels = (value) => {
+    if (useMetric.value) {
+        // Convert from cm to inches, then to pixels
+        return (parseFloat(value) / 2.54) * canvasSettings.value.dpi;
+    } else {
+        // Convert from inches to pixels
+        return parseFloat(value) * canvasSettings.value.dpi;
+    }
+};
+
+const unitDisplayText = computed(() => {
+    return useMetric.value ? 'cm' : 'in';
+});
+
+const updateElementPropertyWithUnits = (property, value) => {
+    if (!selectedElement.value) return;
+    
+    // Convert from display units to pixels for position and size properties
+    const pixelProperties = ['x', 'y', 'width', 'height'];
+    const newValue = pixelProperties.includes(property) 
+        ? displayUnitsToPixels(value)
+        : value;
+    
+    // Update the property in the elements array
+    elements.value = elements.value.map(el => {
+        if (el.id === selectedElement.value.id) {
+            return { ...el, [property]: newValue };
+        }
+        return el;
+    });
+    
+    // Update the selected element reference
+    selectedElement.value = {
+        ...selectedElement.value,
+        [property]: newValue
+    };
+    
+    // Save the change to history
+    saveToHistory();
+};
+
 // Watch for external changes to modelValue
 watch(() => props.modelValue, (newVal) => {
     if (JSON.stringify(elements.value) !== JSON.stringify(newVal)) {
@@ -79,13 +130,53 @@ watch(elements, (newVal) => {
     emit('update:modelValue', [...newVal]);
 }, { deep: true });
 
-// Compute canvas settings based on product dimensions
-const canvasSettings = computed(() => {
-    const dpi = 72; // Using a more standard screen DPI
-    const width = props.product.finished_width * dpi;
-    const height = props.product.finished_length * dpi;
+// Pan-related methods
+const togglePanning = () => {
+    isPanning.value = !isPanning.value;
+    if (!isPanning.value) {
+        document.body.style.cursor = 'default';
+        isPanDragging.value = false;
+    }
+};
+
+const startPanning = (e) => {
+    if (!isPanning.value) return;
+    e.preventDefault();
     
-    // Calculate display scale to fit in viewport while maintaining aspect ratio
+    // Start panning regardless of what was clicked when in panning mode
+    isPanDragging.value = true;
+    panStartPosition.value = { x: e.clientX, y: e.clientY };
+};
+
+const handlePan = (e) => {
+    if (!isPanning.value || !isPanDragging.value) return;
+    
+    const deltaX = e.clientX - panStartPosition.value.x;
+    const deltaY = e.clientY - panStartPosition.value.y;
+    
+    panOffset.value = {
+        x: panOffset.value.x + deltaX / canvasSettings.value.displayScale,
+        y: panOffset.value.y + deltaY / canvasSettings.value.displayScale
+    };
+    
+    panStartPosition.value = { x: e.clientX, y: e.clientY };
+};
+
+const stopPanning = () => {
+    if (isPanning.value) {
+        isPanDragging.value = false;
+    }
+};
+
+// Modified canvasSettings to include pan offset
+const canvasSettings = computed(() => {
+    const dpi = 72;
+    const bleed = props.product.bleed || 0; // Get bleed value from product or default to 0
+    
+    // Calculate dimensions including bleed
+    const width = (parseFloat(props.product.finished_width) + (bleed * 2)) * dpi;
+    const height = (parseFloat(props.product.finished_length) + (bleed * 2)) * dpi;
+    
     const maxDisplayWidth = window.innerWidth * 0.7;
     const maxDisplayHeight = window.innerHeight * 0.8;
     
@@ -97,7 +188,14 @@ const canvasSettings = computed(() => {
         width,
         height,
         dpi,
-        displayScale
+        displayScale,
+        panX: panOffset.value.x,
+        panY: panOffset.value.y,
+        // Add bleed-related properties
+        bleed: bleed * dpi,
+        trimWidth: props.product.finished_width * dpi,
+        trimHeight: props.product.finished_length * dpi,
+        bleedValue: bleed // Store original bleed value for UI display
     };
 });
 
@@ -176,8 +274,21 @@ const saveDesign = debounce(async () => {
             // You could also capture a thumbnail by rendering to canvas and converting to base64
         };
         
-        // Send to server
-        await axios.post('/api/designs', designData);
+        // Get the design ID from parent component
+        const designId = props.designId;
+        
+        // If we have a design ID, update existing design; otherwise create new
+        if (designId) {
+            // Update existing design
+            await axios.put(`/api/designs/${designId}`, designData);
+            console.log(`Updated existing design: ${designId}`);
+        } else {
+            // Create new design
+            const response = await axios.post('/api/designs', designData);
+            // Emit the new design ID to the parent
+            emit('update:designId', response.data.id);
+            console.log(`Created new design: ${response.data.id}`);
+        }
         
         saveStatus.value = 'saved';
         setTimeout(() => {
@@ -234,13 +345,13 @@ const handleDrop = (e) => {
     saveToHistory();
 };
 
+// Modified startDragging to respect panning mode
 const startDragging = (e, element) => {
+    if (isPanning.value) return; // Don't drag elements when in pan mode
     if (e.target.classList.contains('handle')) return;
     
     selectedElement.value = element;
     isDragging.value = true;
-    
-    // Store starting positions in client coordinates
     dragStartPosition.value = { x: e.clientX, y: e.clientY };
     elementStartPosition.value = { x: element.x, y: element.y };
 };
@@ -558,11 +669,16 @@ const handleKeyDown = (e) => {
 
 onMounted(() => {
     window.addEventListener('keydown', handleKeyDown);
+    // Separate listeners for panning
+    window.addEventListener('mousemove', handlePan);
+    window.addEventListener('mouseup', stopPanning);
 });
 
 onUnmounted(() => {
     window.removeEventListener('keydown', handleKeyDown);
-    saveDesign.flush(); // Ensure pending changes are saved
+    window.removeEventListener('mousemove', handlePan);
+    window.removeEventListener('mouseup', stopPanning);
+    saveDesign.flush();
 });
 </script>
 
@@ -570,13 +686,21 @@ onUnmounted(() => {
     <div 
         class="relative w-full h-full bg-gray-100 overflow-auto"
         @click="handleCanvasClick"
-        @wheel.passive="handleWheel"
+        @wheel="handleWheel"
+        @mousedown="startPanning"
+        :class="{ 
+            'cursor-grab': isPanning && !isPanDragging, 
+            'cursor-grabbing': isPanning && isPanDragging 
+        }"
     >
         <!-- Top Toolbar -->
         <div class="absolute top-0 left-0 right-0 bg-white shadow-md z-20 flex justify-between items-center px-4 py-2">
             <!-- Left: Product info -->
             <div class="text-sm font-medium">
                 {{ product.name }} - {{ product.finished_width }}" × {{ product.finished_length }}"
+                <span v-if="product.bleed" class="text-xs ml-1 text-gray-500">
+                    (+ {{ product.bleed }}" bleed)
+                </span>
             </div>
             
             <!-- Center: Zoom controls -->
@@ -645,64 +769,63 @@ onUnmounted(() => {
             </div>
         </div>
 
-        <!-- Properties Panel (when an element is selected) -->
+        <!-- Properties Panel -->
         <div 
             v-if="selectedElement" 
             class="absolute top-12 left-0 right-0 bg-white shadow-md z-20"
             @click.stop
         >
-            <!-- Panel Header with Tabs -->
-            <div class="flex border-b border-gray-200">
-                <!-- Tab buttons -->
+            <!-- Panel Header with Tabs (reduced vertical size) -->
+            <div class="flex border-b border-gray-200 h-10">
                 <button 
                     @click="activePropertyTab = 'transform'" 
-                    class="flex items-center px-4 py-2 text-sm border-b-2 transition-colors focus:outline-none"
+                    class="flex items-center px-3 py-1 text-sm border-b-2 transition-colors focus:outline-none"
                     :class="activePropertyTab === 'transform' ? 'border-blue-500 text-blue-600' : 'border-transparent hover:bg-gray-50'"
                 >
-                    <Move class="size-4 mr-2" />
+                    <Move class="size-4 mr-1" />
                     <span>Transform</span>
                 </button>
                 
                 <button 
                     v-if="selectedElement.type === 'text'"
                     @click="activePropertyTab = 'text'" 
-                    class="flex items-center px-4 py-2 text-sm border-b-2 transition-colors focus:outline-none"
+                    class="flex items-center px-3 py-1 text-sm border-b-2 transition-colors focus:outline-none"
                     :class="activePropertyTab === 'text' ? 'border-blue-500 text-blue-600' : 'border-transparent hover:bg-gray-50'"
                 >
-                    <Text class="size-4 mr-2" />
+                    <Text class="size-4 mr-1" />
                     <span>Text</span>
                 </button>
                 
                 <button 
                     @click="activePropertyTab = 'style'" 
-                    class="flex items-center px-4 py-2 text-sm border-b-2 transition-colors focus:outline-none"
+                    class="flex items-center px-3 py-1 text-sm border-b-2 transition-colors focus:outline-none"
                     :class="activePropertyTab === 'style' ? 'border-blue-500 text-blue-600' : 'border-transparent hover:bg-gray-50'"
                 >
-                    <Palette class="size-4 mr-2" />
+                    <Palette class="size-4 mr-1" />
                     <span>Style</span>
                 </button>
                 
                 <button 
                     @click="activePropertyTab = 'layer'" 
-                    class="flex items-center px-4 py-2 text-sm border-b-2 transition-colors focus:outline-none"
+                    class="flex items-center px-3 py-1 text-sm border-b-2 transition-colors focus:outline-none"
                     :class="activePropertyTab === 'layer' ? 'border-blue-500 text-blue-600' : 'border-transparent hover:bg-gray-50'"
                 >
-                    <Layers class="size-4 mr-2" />
+                    <Layers class="size-4 mr-1" />
                     <span>Layer</span>
                 </button>
                 
                 <div class="ml-auto flex items-center px-2">
                     <button 
                         @click="elements = elements.filter(el => el.id !== selectedElement.id); selectedElement = null; saveToHistory();" 
-                        class="p-1.5 rounded-full hover:bg-red-100 hover:text-red-600 transition-colors"
+                        class="px-2 py-1 text-sm text-red-600 hover:bg-red-100 rounded transition-colors"
                         title="Delete Element"
                     >
-                        <X class="size-4" />
+                        Delete Element
                     </button>
                     
                     <button 
                         @click="propertiesPanelExpanded = !propertiesPanelExpanded" 
-                        class="p-1.5 rounded-full hover:bg-gray-100 ml-2"
+                        class="p-1 rounded-full hover:bg-gray-100 ml-2"
                         :title="propertiesPanelExpanded ? 'Collapse Panel' : 'Expand Panel'"
                     >
                         <ChevronUp v-if="propertiesPanelExpanded" class="size-4" />
@@ -711,382 +834,410 @@ onUnmounted(() => {
                 </div>
             </div>
             
-            <!-- Panel Content -->
-            <div v-if="propertiesPanelExpanded" class="p-4">
-                <!-- Transform Properties -->
-                <div v-if="activePropertyTab === 'transform'">
-                    <div class="grid grid-cols-4 gap-4">
-                        <div>
-                            <label class="block text-xs text-gray-500 mb-1">Position X</label>
-                            <input 
-                                type="number" 
-                                :value="selectedElement.x"
-                                @input="updateElementProperty('x', parseFloat($event.target.value))"
-                                @change="saveToHistory"
-                                @click.stop
-                                @keydown.stop
-                                class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
-                            >
-                        </div>
-                        <div>
-                            <label class="block text-xs text-gray-500 mb-1">Position Y</label>
-                            <input 
-                                type="number" 
-                                :value="selectedElement.y"
-                                @input="updateElementProperty('y', parseFloat($event.target.value))"
-                                @change="saveToHistory"
-                                @click.stop
-                                @keydown.stop
-                                class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
-                            >
-                        </div>
-                        <div>
-                            <label class="block text-xs text-gray-500 mb-1">Width</label>
-                            <input 
-                                type="number" 
-                                :value="selectedElement.width"
-                                @input="updateElementProperty('width', parseFloat($event.target.value))"
-                                @change="saveToHistory"
-                                @click.stop
-                                @keydown.stop
-                                class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
-                            >
-                        </div>
-                        <div>
-                            <label class="block text-xs text-gray-500 mb-1">Height</label>
-                            <input 
-                                type="number" 
-                                :value="selectedElement.height"
-                                @input="updateElementProperty('height', parseFloat($event.target.value))"
-                                @change="saveToHistory"
-                                @click.stop
-                                @keydown.stop
-                                class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
-                            >
-                        </div>
-                        <div>
-                            <label class="block text-xs text-gray-500 mb-1">Rotation (°)</label>
-                            <input 
-                                type="number" 
-                                :value="selectedElement.rotation"
-                                @input="updateElementProperty('rotation', parseFloat($event.target.value))"
-                                @change="saveToHistory"
-                                @click.stop
-                                @keydown.stop
-                                class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
-                            >
-                        </div>
+        <!-- Panel Content (reduced vertical height) -->
+        <div v-if="propertiesPanelExpanded" class="p-2"> 
+            <!-- Transform Properties -->
+            <div v-if="activePropertyTab === 'transform'">
+                <!-- <div class="grid grid-cols-4 gap-2">  -->
+                    <!-- make it be flex fitting all in the one row evenly spaced -->
+                <div class="flex flex-row gap-2">
+                    <div>
+                        <label class="block text-xs text-gray-500 mb-0.5">Position X ({{ unitDisplayText }})</label> 
+                        <input 
+                            type="number" 
+                            step="0.1"
+                            :value="pixelsToDisplayUnits(selectedElement.x)"
+                            @input="updateElementPropertyWithUnits('x', $event.target.value)"
+                            @change="saveToHistory"
+                            @click.stop
+                            @keydown.stop
+                            class="w-auto px-2 py-1 border border-gray-300 rounded-md text-sm" 
+                        >
+                    </div>
+                    <div>
+                        <label class="block text-xs text-gray-500 mb-0.5">Position Y ({{ unitDisplayText }})</label>
+                        <input 
+                            type="number" 
+                            step="0.1"
+                            :value="pixelsToDisplayUnits(selectedElement.y)"
+                            @input="updateElementPropertyWithUnits('y', $event.target.value)"
+                            @change="saveToHistory"
+                            @click.stop
+                            @keydown.stop
+                            class="w-auto px-2 py-1 border border-gray-300 rounded-md text-sm"
+                        >
+                    </div>
+                    <div>
+                        <label class="block text-xs text-gray-500 mb-0.5">Width ({{ unitDisplayText }})</label>
+                        <input 
+                            type="number" 
+                            step="0.1"
+                            :value="pixelsToDisplayUnits(selectedElement.width)"
+                            @input="updateElementPropertyWithUnits('width', $event.target.value)"
+                            @change="saveToHistory"
+                            @click.stop
+                            @keydown.stop
+                            class="w-auto px-2 py-1 border border-gray-300 rounded-md text-sm"
+                        >
+                    </div>
+                    <div>
+                        <label class="block text-xs text-gray-500 mb-0.5">Height ({{ unitDisplayText }})</label>
+                        <input 
+                            type="number" 
+                            step="0.1"
+                            :value="pixelsToDisplayUnits(selectedElement.height)"
+                            @input="updateElementPropertyWithUnits('height', $event.target.value)"
+                            @change="saveToHistory"
+                            @click.stop
+                            @keydown.stop
+                            class="w-auto px-2 py-1 border border-gray-300 rounded-md text-sm"
+                        >
+                    </div>
+                    <div>
+                        <label class="block text-xs text-gray-500 mb-0.5">Rotation (°)</label>
+                        <input 
+                            type="number" 
+                            :value="selectedElement.rotation"
+                            @input="updateElementProperty('rotation', parseFloat($event.target.value))"
+                            @change="saveToHistory"
+                            @click.stop
+                            @keydown.stop
+                            class="w-auto px-2 py-1 border border-gray-300 rounded-md text-sm"
+                        >
                     </div>
                 </div>
-                
-                <!-- Text Properties -->
-                <div v-if="activePropertyTab === 'text' && selectedElement.type === 'text'">
-                    <div class="grid grid-cols-4 gap-4">
-                        <div class="col-span-4 mb-2">
-                            <label class="block text-xs text-gray-500 mb-1">Text Content</label>
+            </div>
+            
+            <!-- Text Properties -->
+            <div v-if="activePropertyTab === 'text' && selectedElement.type === 'text'">
+                <!-- <div class="grid grid-cols-4 gap-2"> -->
+                    <!-- make it be flex fitting all in the one row evenly spaced -->
+                <div class="flex flex-row gap-2">
+                    <div class="col-span-4 mb-1"> <!-- Reduced from mb-2 -->
+                        <label class="block text-xs text-gray-500 mb-0.5">Text Content</label>
+                        <input 
+                            type="text" 
+                            :value="selectedElement.content"
+                            @input="updateElementProperty('content', $event.target.value)"
+                            @change="saveToHistory"
+                            @click.stop
+                            @keydown.stop
+                            class="w-auto px-2 py-1 border border-gray-300 rounded-md text-sm"
+                        >
+                    </div>
+                    <div>
+                        <label class="block text-xs text-gray-500 mb-0.5">Font Size</label>
+                        <input 
+                            type="number" 
+                            :value="selectedElement.fontSize"
+                            @input="updateElementProperty('fontSize', parseFloat($event.target.value))"
+                            @change="saveToHistory"
+                            @click.stop
+                            @keydown.stop
+                            class="w-auto px-2 py-1 border border-gray-300 rounded-md text-sm"
+                        >
+                    </div>
+                    <div class="col-span-2">
+                        <label class="block text-xs text-gray-500 mb-0.5">Font Family</label>
+                        <select 
+                            :value="selectedElement.fontFamily"
+                            @input="updateElementProperty('fontFamily', $event.target.value)"
+                            @change="saveToHistory"
+                            @click.stop
+                            @keydown.stop
+                            class="w-auto px-2 py-1 border border-gray-300 rounded-md text-sm"
+                        >
+                            <option value="Arial">Arial</option>
+                            <option value="Times New Roman">Times New Roman</option>
+                            <option value="Courier New">Courier New</option>
+                            <option value="Georgia">Georgia</option>
+                            <option value="Verdana">Verdana</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-xs text-gray-500 mb-0.5">Color</label>
+                        <div class="flex items-center">
+                            <input 
+                                type="color" 
+                                :value="selectedElement.color" 
+                                @input="updateElementProperty('color', $event.target.value)"
+                                @change="saveToHistory"
+                                @click.stop
+                                @keydown.stop
+                                class="w-6 h-6 p-0 rounded border border-gray-300" 
+                            >
                             <input 
                                 type="text" 
-                                :value="selectedElement.content"
-                                @input="updateElementProperty('content', $event.target.value)"
+                                :value="selectedElement.color"
+                                @input="updateElementProperty('color', $event.target.value)"
                                 @change="saveToHistory"
                                 @click.stop
                                 @keydown.stop
-                                class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
+                                class="w-auto ml-1 px-2 py-1 border border-gray-300 rounded-md text-sm" 
                             >
-                        </div>
-                        <div>
-                            <label class="block text-xs text-gray-500 mb-1">Font Size</label>
-                            <input 
-                                type="number" 
-                                :value="selectedElement.fontSize"
-                                @input="updateElementProperty('fontSize', parseFloat($event.target.value))"
-                                @change="saveToHistory"
-                                @click.stop
-                                @keydown.stop
-                                class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
-                            >
-                        </div>
-                        <div class="col-span-2">
-                            <label class="block text-xs text-gray-500 mb-1">Font Family</label>
-                            <select 
-                                :value="selectedElement.fontFamily"
-                                @input="updateElementProperty('fontFamily', $event.target.value)"
-                                @change="saveToHistory"
-                                @click.stop
-                                @keydown.stop
-                                class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
-                            >
-                                <option value="Arial">Arial</option>
-                                <option value="Times New Roman">Times New Roman</option>
-                                <option value="Courier New">Courier New</option>
-                                <option value="Georgia">Georgia</option>
-                                <option value="Verdana">Verdana</option>
-                            </select>
-                        </div>
-                        <div>
-                            <label class="block text-xs text-gray-500 mb-1">Color</label>
-                            <div class="flex items-center">
-                                <input 
-                                    type="color" 
-                                    :value="selectedElement.color" 
-                                    @input="updateElementProperty('color', $event.target.value)"
-                                    @change="saveToHistory"
-                                    @click.stop
-                                    @keydown.stop
-                                    class="w-8 h-8 p-0 rounded border border-gray-300"
-                                >
-                                <input 
-                                    type="text" 
-                                    :value="selectedElement.color"
-                                    @input="updateElementProperty('color', $event.target.value)"
-                                    @change="saveToHistory"
-                                    @click.stop
-                                    @keydown.stop
-                                    class="flex-1 ml-2 px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
-                                >
-                            </div>
                         </div>
                     </div>
                 </div>
-                
-                <!-- Style Properties -->
-                <div v-if="activePropertyTab === 'style'">
-                    <div class="grid grid-cols-4 gap-4">
-                        <div v-if="selectedElement.type === 'shape'" class="col-span-2">
-                            <label class="block text-xs text-gray-500 mb-1">Fill Color</label>
-                            <div class="flex items-center">
-                                <input 
-                                    type="color" 
-                                    :value="selectedElement.color" 
-                                    @input="updateElementProperty('color', $event.target.value)"
-                                    @change="saveToHistory"
-                                    @click.stop
-                                    @keydown.stop
-                                    class="w-8 h-8 p-0 rounded border border-gray-300"
-                                >
-                                <input 
-                                    type="text" 
-                                    :value="selectedElement.color"
-                                    @input="updateElementProperty('color', $event.target.value)"
-                                    @change="saveToHistory"
-                                    @click.stop
-                                    @keydown.stop
-                                    class="flex-1 ml-2 px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
-                                >
-                            </div>
-                        </div>
-                        
-                        <div v-if="selectedElement.type === 'shape'" class="col-span-2">
-                            <label class="block text-xs text-gray-500 mb-1">Border Color</label>
-                            <div class="flex items-center">
-                                <input 
-                                    type="color" 
-                                    :value="selectedElement.borderColor || '#000000'" 
-                                    @input="updateElementProperty('borderColor', $event.target.value)"
-                                    @change="saveToHistory"
-                                    @click.stop
-                                    @keydown.stop
-                                    class="w-8 h-8 p-0 rounded border border-gray-300"
-                                >
-                                <input 
-                                    type="text" 
-                                    :value="selectedElement.borderColor || '#000000'"
-                                    @input="updateElementProperty('borderColor', $event.target.value)"
-                                    @change="saveToHistory"
-                                    @click.stop
-                                    @keydown.stop
-                                    class="flex-1 ml-2 px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
-                                >
-                            </div>
-                        </div>
-                        
-                        <div v-if="selectedElement.type === 'shape'" class="col-span-4">
-                            <label class="block text-xs text-gray-500 mb-1">Border Radius: {{ selectedElement.borderRadius || 0 }}px</label>
+            </div>
+            
+            <!-- Style Properties -->
+            <div v-if="activePropertyTab === 'style'">
+                <!-- <div class="grid grid-cols-4 gap-2"> -->
+                    <!-- make it be flex fitting all in the one row evenly spaced -->
+                <div class="flex flex-row gap-2">
+                    <div v-if="selectedElement.type === 'shape'" class="col-span-2">
+                        <label class="block text-xs text-gray-500 mb-0.5">Fill Color</label>
+                        <div class="flex items-center">
                             <input 
-                                type="range" 
-                                min="0" 
-                                max="100" 
-                                :value="selectedElement.borderRadius || 0" 
-                                @input="updateElementProperty('borderRadius', parseFloat($event.target.value))"
+                                type="color" 
+                                :value="selectedElement.color" 
+                                @input="updateElementProperty('color', $event.target.value)"
                                 @change="saveToHistory"
                                 @click.stop
                                 @keydown.stop
-                                class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"
+                                class="w-6 h-6 p-0 rounded border border-gray-300"
                             >
-                        </div>
-                        
-                        <div v-if="selectedElement.type === 'text'" class="col-span-4">
-                            <label class="block text-xs text-gray-500 mb-1">Text Color</label>
-                            <div class="flex items-center">
-                                <input 
-                                    type="color" 
-                                    :value="selectedElement.color" 
-                                    @input="updateElementProperty('color', $event.target.value)"
-                                    @change="saveToHistory"
-                                    @click.stop
-                                    @keydown.stop
-                                    class="w-8 h-8 p-0 rounded border border-gray-300"
-                                >
-                                <input 
-                                    type="text" 
-                                    :value="selectedElement.color"
-                                    @input="updateElementProperty('color', $event.target.value)"
-                                    @change="saveToHistory"
-                                    @click.stop
-                                    @keydown.stop
-                                    class="flex-1 ml-2 px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
-                                >
-                            </div>
+                            <input 
+                                type="text" 
+                                :value="selectedElement.color"
+                                @input="updateElementProperty('color', $event.target.value)"
+                                @change="saveToHistory"
+                                @click.stop
+                                @keydown.stop
+                                class="w-auto ml-1 px-2 py-1 border border-gray-300 rounded-md text-sm"
+                            >
                         </div>
                     </div>
-                </div>
-                
-                <!-- Layer Properties -->
-                <div v-if="activePropertyTab === 'layer'">
-                    <div class="flex flex-col items-center">
-                        <div class="grid grid-cols-2 gap-4 w-full mb-4">
-                            <button 
-                                @click="moveLayer('top')" 
-                                class="flex items-center justify-center py-2 px-4 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    
+                    <div v-if="selectedElement.type === 'shape'" class="col-span-2">
+                        <label class="block text-xs text-gray-500 mb-0.5">Border Color</label>
+                        <div class="flex items-center">
+                            <input 
+                                type="color" 
+                                :value="selectedElement.borderColor || '#000000'" 
+                                @input="updateElementProperty('borderColor', $event.target.value)"
+                                @change="saveToHistory"
+                                @click.stop
+                                @keydown.stop
+                                class="w-6 h-6 p-0 rounded border border-gray-300"
                             >
-                                <span class="mr-2">Bring to Front</span>
-                                <Layers class="size-4" />
-                            </button>
-                            <button 
-                                @click="moveLayer('up')" 
-                                class="flex items-center justify-center py-2 px-4 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                            <input 
+                                type="text" 
+                                :value="selectedElement.borderColor || '#000000'"
+                                @input="updateElementProperty('borderColor', $event.target.value)"
+                                @change="saveToHistory"
+                                @click.stop
+                                @keydown.stop
+                                class="w-auto ml-1 px-2 py-1 border border-gray-300 rounded-md text-sm"
                             >
-                                <span class="mr-2">Bring Forward</span>
-                                <ChevronUp class="size-4" />
-                            </button>
-                            <button 
-                                @click="moveLayer('down')" 
-                                class="flex items-center justify-center py-2 px-4 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                            >
-                                <span class="mr-2">Send Backward</span>
-                                <ChevronDown class="size-4" />
-                            </button>
-                            <button 
-                                @click="moveLayer('bottom')" 
-                                class="flex items-center justify-center py-2 px-4 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                            >
-                                <span class="mr-2">Send to Back</span>
-                                <Layers class="size-4 transform rotate-180" />
-                            </button>
                         </div>
-                        
-                        <button 
-                            @click="elements = elements.filter(el => el.id !== selectedElement.id); selectedElement = null; saveToHistory();" 
-                            class="py-2 px-4 border border-red-300 rounded-md shadow-sm text-sm font-medium text-red-700 bg-red-50 hover:bg-red-100 focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500 w-full"
+                    </div>
+                    
+                    <div v-if="selectedElement.type === 'shape'" class="col-span-4">
+                        <label class="block text-xs text-gray-500 mb-0.5">Border Radius: {{ selectedElement.borderRadius || 0 }}px</label>
+                        <input 
+                            type="range" 
+                            min="0" 
+                            max="100" 
+                            :value="selectedElement.borderRadius || 0" 
+                            @input="updateElementProperty('borderRadius', parseFloat($event.target.value))"
+                            @change="saveToHistory"
+                            @click.stop
+                            @keydown.stop
+                            class="w-auto bg-gray-200 rounded-lg appearance-none cursor-pointer" 
                         >
-                            Delete Element
+                    </div>
+                    
+                    <div v-if="selectedElement.type === 'text'" class="col-span-4">
+                        <label class="block text-xs text-gray-500 mb-0.5">Text Color</label>
+                        <div class="flex items-center">
+                            <input 
+                                type="color" 
+                                :value="selectedElement.color" 
+                                @input="updateElementProperty('color', $event.target.value)"
+                                @change="saveToHistory"
+                                @click.stop
+                                @keydown.stop
+                                class="w-6 h-6 p-0 rounded border border-gray-300"
+                            >
+                            <input 
+                                type="text" 
+                                :value="selectedElement.color"
+                                @input="updateElementProperty('color', $event.target.value)"
+                                @change="saveToHistory"
+                                @click.stop
+                                @keydown.stop
+                                class="w-auto ml-1 px-2 py-1 border border-gray-300 rounded-md text-sm"
+                            >
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Layer Properties -->
+            <div v-if="activePropertyTab === 'layer'">
+                <div class="flex flex-col items-center">
+                    <!-- <div class="grid grid-cols-2 gap-2 w-full mb-2">  -->
+                        <!-- make it be flex fitting all in the one row evenly spaced -->
+                    <div class="flex flex-row gap-2">
+                        <button 
+                            @click="moveLayer('top')" 
+                            class="flex items-center justify-center py-1 px-3 border border-gray-300 rounded-md text-sm" 
+                        >
+                            <span class="mr-1">Bring to Front</span> 
+                            <Layers class="size-4" />
+                        </button>
+                        <button 
+                            @click="moveLayer('up')" 
+                            class="flex items-center justify-center py-1 px-3 border border-gray-300 rounded-md text-sm"
+                        >
+                            <span class="mr-1">Bring Forward</span>
+                            <ChevronUp class="size-4" />
+                        </button>
+                        <button 
+                            @click="moveLayer('down')" 
+                            class="flex items-center justify-center py-1 px-3 border border-gray-300 rounded-md text-sm"
+                        >
+                            <span class="mr-1">Send Backward</span>
+                            <ChevronDown class="size-4" />
+                        </button>
+                        <button 
+                            @click="moveLayer('bottom')" 
+                            class="flex items-center justify-center py-1 px-3 border border-gray-300 rounded-md text-sm"
+                        >
+                            <span class="mr-1">Send to Back</span>
+                            <Layers class="size-4 transform rotate-180" />
                         </button>
                     </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Canvas Area -->
-        <div 
-            class="relative bg-white shadow-lg mx-auto mt-20 mb-8"
-            :style="{
-                width: canvasSettings.width * canvasSettings.displayScale + 'px',
-                height: canvasSettings.height * canvasSettings.displayScale + 'px'
-            }"
-            @dragover="handleDragOver"
-            @drop="handleDrop"
-        >
-            <!-- Safe Area Guide -->
-            <div 
-                class="absolute border-2 border-gray-200 border-dashed pointer-events-none"
-                :style="{
-                    top: '0.125in',
-                    left: '0.125in',
-                    right: '0.125in',
-                    bottom: '0.125in'
-                }"
-            />
-
-            <!-- Design Elements -->
-            <div 
-                v-for="element in elements"
-                :key="element.id"
-                class="absolute cursor-move"
-                :class="{ 'ring-2 ring-blue-500 z-50': selectedElement?.id === element.id }"
-                :style="{
-                    position: 'absolute',
-                    left: `${element.x * canvasSettings.displayScale}px`,
-                    top: `${element.y * canvasSettings.displayScale}px`,
-                    width: `${element.width * canvasSettings.displayScale}px`,
-                    height: `${element.height * canvasSettings.displayScale}px`,
-                    transform: `rotate(${element.rotation}deg)`,
-                    transformOrigin: 'center center',
-                    zIndex: element.zIndex
-                }"
-                @mousedown="startDragging($event, element)"
-                @click.stop="handleElementClick(element, $event)"
-                @dblclick.stop="handleTextEdit(element, $event)"
-            >
-                <!-- Text Element -->
-                <div 
-                    v-if="element.type === 'text'"
-                    class="w-full h-full overflow-hidden"
-                >
-                    <p 
-                        :style="{
-                            fontSize: `${element.fontSize * canvasSettings.displayScale}px`,
-                            fontFamily: element.fontFamily,
-                            color: element.color,
-                            lineHeight: '1.2',
-                            margin: '0',
-                            padding: '0'
-                        }"
+                    
+                    <button 
+                        @click="elements = elements.filter(el => el.id !== selectedElement.id); selectedElement = null; saveToHistory();" 
+                        class="mt-2 py-1 px-3 border border-red-300 rounded-md text-sm text-red-700 bg-red-50 hover:bg-red-100 w-auto" 
                     >
-                        {{ element.content }}
-                    </p>
+                        Delete Element
+                    </button>
                 </div>
-
-                <!-- Image Element -->
-                <div 
-                    v-else-if="element.type === 'image'"
-                    class="w-full h-full bg-gray-200 flex items-center justify-center overflow-hidden"
-                >
-                    <img v-if="element.src" :src="element.src" class="w-full h-full object-contain" />
-                    <Image v-else class="size-12 text-gray-400" />
-                </div>
-
-                <!-- Shape Element -->
-                <div 
-                    v-else-if="element.type === 'shape'"
-                    class="w-full h-full"
-                    :style="{
-                        backgroundColor: element.color || '#FFFFFF',
-                        border: '2px solid ' + (element.borderColor || '#000000'),
-                        borderRadius: element.borderRadius ? `${element.borderRadius * canvasSettings.displayScale}px` : '0'
-                    }"
-                />
-
-                <!-- Resize Handles (only visible when element is selected) -->
-                <template v-if="selectedElement?.id === element.id">
-                    <!-- Corners -->
-                    <div class="handle absolute top-0 left-0 w-3 h-3 bg-white border border-blue-500 z-10 cursor-nwse-resize -translate-x-1/2 -translate-y-1/2" @mousedown.stop="startResizing($event, element, 'nw')"></div>
-                    <div class="handle absolute top-0 right-0 w-3 h-3 bg-white border border-blue-500 z-10 cursor-nesw-resize translate-x-1/2 -translate-y-1/2" @mousedown.stop="startResizing($event, element, 'ne')"></div>
-                    <div class="handle absolute bottom-0 left-0 w-3 h-3 bg-white border border-blue-500 z-10 cursor-nesw-resize -translate-x-1/2 translate-y-1/2" @mousedown.stop="startResizing($event, element, 'sw')"></div>
-                    <div class="handle absolute bottom-0 right-0 w-3 h-3 bg-white border border-blue-500 z-10 cursor-nwse-resize translate-x-1/2 translate-y-1/2" @mousedown.stop="startResizing($event, element, 'se')"></div>
-                    
-                    <!-- Edges -->
-                    <div class="handle absolute top-0 left-1/2 w-3 h-3 bg-white border border-blue-500 z-10 cursor-ns-resize -translate-x-1/2 -translate-y-1/2" @mousedown.stop="startResizing($event, element, 'n')"></div>
-                    <div class="handle absolute bottom-0 left-1/2 w-3 h-3 bg-white border border-blue-500 z-10 cursor-ns-resize -translate-x-1/2 translate-y-1/2" @mousedown.stop="startResizing($event, element, 's')"></div>
-                    <div class="handle absolute left-0 top-1/2 w-3 h-3 bg-white border border-blue-500 z-10 cursor-ew-resize -translate-x-1/2 -translate-y-1/2" @mousedown.stop="startResizing($event, element, 'w')"></div>
-                    <div class="handle absolute right-0 top-1/2 w-3 h-3 bg-white border border-blue-500 z-10 cursor-ew-resize translate-x-1/2 -translate-y-1/2" @mousedown.stop="startResizing($event, element, 'e')"></div>
-                    
-                    <!-- Rotation Handle -->
-                    <div class="handle absolute top-0 left-1/2 w-3 h-3 bg-white border border-blue-500 z-10 cursor-move -translate-x-1/2 -translate-y-8" @mousedown.stop="startRotating($event, element)"></div>
-                </template>
             </div>
         </div>
+        </div>
 
-        <!-- Zoom Controls (bottom right) -->
+<!-- Canvas Area -->
+<div 
+    class="relative bg-white shadow-lg mx-auto mt-20 mb-8"
+    :style="{
+        width: canvasSettings.width * canvasSettings.displayScale + 'px',
+        height: canvasSettings.height * canvasSettings.displayScale + 'px',
+        transform: `translate(${canvasSettings.panX}px, ${canvasSettings.panY}px)`
+    }"
+    @dragover="handleDragOver"
+    @drop="handleDrop"
+>
+    <!-- Trim Line (Red Dotted Border) -->
+    <div 
+        class="absolute border-2 border-red-500 border-dashed pointer-events-none"
+        :style="{
+            top: `${canvasSettings.bleed * canvasSettings.displayScale}px`,
+            left: `${canvasSettings.bleed * canvasSettings.displayScale}px`,
+            width: `${canvasSettings.trimWidth * canvasSettings.displayScale}px`,
+            height: `${canvasSettings.trimHeight * canvasSettings.displayScale}px`
+        }"
+    >
+        <!-- Trim Line Label -->
+        <div class="absolute -top-8 left-0 text-xs text-red-500 font-medium">
+            Trim Line - Content outside this line may be cut off
+        </div>
+    </div>
+
+    <!-- Bleed Area Label -->
+    <div class="absolute -bottom-6 right-1 text-xs bg-white bg-opacity-75 px-1 py-0.5 rounded text-gray-700">
+        <div>
+            Dimensions: {{ pixelsToDisplayUnits(canvasSettings.trimWidth) }} × {{ pixelsToDisplayUnits(canvasSettings.trimHeight) }} {{ unitDisplayText }}
+        </div>
+        <div>
+            Bleed: {{ useMetric ? (canvasSettings.bleedValue * 2.54).toFixed(2) : canvasSettings.bleedValue }} {{ unitDisplayText }} - Extend artwork to edges
+        </div>
+    </div>
+
+    <!-- Design Elements -->
+    <div 
+        v-for="element in elements"
+        :key="element.id"
+        class="absolute cursor-move"
+        :class="{ 'ring-2 ring-blue-500 z-50': selectedElement?.id === element.id }"
+        :style="{
+            position: 'absolute',
+            left: `${element.x * canvasSettings.displayScale}px`,
+            top: `${element.y * canvasSettings.displayScale}px`,
+            width: `${element.width * canvasSettings.displayScale}px`,
+            height: `${element.height * canvasSettings.displayScale}px`,
+            transform: `rotate(${element.rotation}deg)`,
+            transformOrigin: 'center center',
+            zIndex: element.zIndex
+        }"
+        @mousedown="startDragging($event, element)"
+        @click.stop="handleElementClick(element, $event)"
+        @dblclick.stop="handleTextEdit(element, $event)"
+    >
+        <!-- Text Element -->
+        <div 
+            v-if="element.type === 'text'"
+            class="w-full h-full overflow-hidden"
+        >
+            <p 
+                :style="{
+                    fontSize: `${element.fontSize * canvasSettings.displayScale}px`,
+                    fontFamily: element.fontFamily,
+                    color: element.color,
+                    lineHeight: '1.2',
+                    margin: '0',
+                    padding: '0'
+                }"
+            >
+                {{ element.content }}
+            </p>
+        </div>
+
+        <!-- Image Element -->
+        <div 
+            v-else-if="element.type === 'image'"
+            class="w-full h-full bg-gray-200 flex items-center justify-center overflow-hidden"
+        >
+            <img v-if="element.src" :src="element.src" class="w-full h-full object-contain" />
+            <Image v-else class="size-12 text-gray-400" />
+        </div>
+
+        <!-- Shape Element -->
+        <div 
+            v-else-if="element.type === 'shape'"
+            class="w-full h-full"
+            :style="{
+                backgroundColor: element.color || '#FFFFFF',
+                border: '2px solid ' + (element.borderColor || '#000000'),
+                borderRadius: element.borderRadius ? `${element.borderRadius * canvasSettings.displayScale}px` : '0'
+            }"
+        />
+
+        <!-- Resize Handles (only visible when element is selected) -->
+        <template v-if="selectedElement?.id === element.id">
+            <!-- Corners -->
+            <div class="handle absolute top-0 left-0 w-3 h-3 bg-white border border-blue-500 z-10 cursor-nwse-resize -translate-x-1/2 -translate-y-1/2" @mousedown.stop="startResizing($event, element, 'nw')"></div>
+            <div class="handle absolute top-0 right-0 w-3 h-3 bg-white border border-blue-500 z-10 cursor-nesw-resize translate-x-1/2 -translate-y-1/2" @mousedown.stop="startResizing($event, element, 'ne')"></div>
+            <div class="handle absolute bottom-0 left-0 w-3 h-3 bg-white border border-blue-500 z-10 cursor-nesw-resize -translate-x-1/2 translate-y-1/2" @mousedown.stop="startResizing($event, element, 'sw')"></div>
+            <div class="handle absolute bottom-0 right-0 w-3 h-3 bg-white border border-blue-500 z-10 cursor-nwse-resize translate-x-1/2 translate-y-1/2" @mousedown.stop="startResizing($event, element, 'se')"></div>
+            
+            <!-- Edges -->
+            <div class="handle absolute top-0 left-1/2 w-3 h-3 bg-white border border-blue-500 z-10 cursor-ns-resize -translate-x-1/2 -translate-y-1/2" @mousedown.stop="startResizing($event, element, 'n')"></div>
+            <div class="handle absolute bottom-0 left-1/2 w-3 h-3 bg-white border border-blue-500 z-10 cursor-ns-resize -translate-x-1/2 translate-y-1/2" @mousedown.stop="startResizing($event, element, 's')"></div>
+            <div class="handle absolute left-0 top-1/2 w-3 h-3 bg-white border border-blue-500 z-10 cursor-ew-resize -translate-x-1/2 -translate-y-1/2" @mousedown.stop="startResizing($event, element, 'w')"></div>
+            <div class="handle absolute right-0 top-1/2 w-3 h-3 bg-white border border-blue-500 z-10 cursor-ew-resize translate-x-1/2 -translate-y-1/2" @mousedown.stop="startResizing($event, element, 'e')"></div>
+            
+            <!-- Rotation Handle -->
+            <div class="handle absolute top-0 left-1/2 w-3 h-3 bg-white border border-blue-500 z-10 cursor-move -translate-x-1/2 -translate-y-8" @mousedown.stop="startRotating($event, element)"></div>
+        </template>
+    </div>
+</div>
+
+      <!-- Zoom, Pan, and Units Controls -->
         <div class="fixed bottom-4 right-4 bg-white rounded-full shadow-md p-1 flex items-center space-x-1 z-20">
             <button 
                 @click="zoomOut" 
@@ -1095,6 +1246,15 @@ onUnmounted(() => {
                 title="Zoom Out"
             >
                 <ZoomOut class="size-5" />
+            </button>
+            
+            <button 
+                @click="togglePanning" 
+                class="p-1.5 rounded-full hover:bg-gray-100"
+                :class="{ 'bg-gray-200': isPanning }"
+                title="Toggle Pan Mode"
+            >
+                <MousePointer2 class="size-5" />
             </button>
             
             <button 
@@ -1113,9 +1273,18 @@ onUnmounted(() => {
             >
                 <ZoomIn class="size-5" />
             </button>
+            
+            <div class="h-6 border-l border-gray-300 mx-1"></div>
+            
+            <button 
+                @click="toggleUnitSystem" 
+                class="p-1.5 rounded-full hover:bg-gray-100 text-xs font-medium"
+                title="Toggle between inches and centimeters"
+            >
+                {{ useMetric ? 'cm' : 'in' }}
+            </button>
         </div>
-
-        <!-- Mouse move handler for transformations -->
+        <!-- Transformation handler -->
         <div 
             v-if="isDragging || isResizing || isRotating"
             class="fixed inset-0 z-50"
