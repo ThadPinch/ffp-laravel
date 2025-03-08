@@ -40,4 +40,11 @@ return [
         'model' => env('ANTHROPIC_MODEL', 'claude-3-7-sonnet-20250219'),
     ],
 
+    'aws' => [
+        'key' => env('AWS_ACCESS_KEY_ID'),
+        'secret' => env('AWS_SECRET_ACCESS_KEY'),
+        'region' => env('AWS_DEFAULT_REGION', 'us-west-1'),
+        'lambda_function_pdf' => env('AWS_LAMBDA_PDF_FUNCTION', 'PDFGenerator1'),
+    ],
+
 ];

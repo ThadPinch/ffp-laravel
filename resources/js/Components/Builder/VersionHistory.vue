@@ -62,6 +62,8 @@ watch(() => props.modelValue, (newValue) => {
 onMounted(() => {
     if (props.modelValue) {
         fetchVersions();
+        // log the id
+        console.log('this is design id: ', props.designId);
     }
 });
 </script>

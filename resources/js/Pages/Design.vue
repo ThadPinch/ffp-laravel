@@ -252,7 +252,7 @@ watch(elements, () => {
 const handleRestoreVersion = async (version) => {
     try {
         // const response = await axios.post(`/api/designs/${props.design.id}/versions/${version.id}/restore`);
-        const response = await axios.post(`/api/designs/${props.designId}/versions/${version.id}/restore`);
+        const response = await axios.post(`/api/designs/${designId.value}/versions/${version.id}/restore`);
         elements.value = response.data.elements;
         saveStatus.value = 'saved';
         showVersions.value = false;
@@ -266,6 +266,25 @@ const handleRestoreVersion = async (version) => {
         console.error('Error restoring version:', error);
         saveStatus.value = 'error';
     }
+};
+
+const handleDesignNameBlur = () => {
+    // Log the current state before saving
+    console.log('Auto-saving design. Current state:', {
+        designId: designId.value,
+        designName: designName.value,
+        elementsCount: elements.value.length
+    });
+    
+    saveDesign().then(result => {
+        // Ensure we have a design ID for chat functionality
+        if (result && result.id) {
+            if (designId.value !== result.id) {
+                console.log('Design ID updated from', designId.value, 'to', result.id);
+                designId.value = result.id;
+            }
+        }
+    });
 };
 </script>
 
@@ -305,11 +324,13 @@ const handleRestoreVersion = async (version) => {
                     <a href="/dashboard" class="mr-4 text-gray-500 hover:text-gray-700">
                         <ChevronLeft class="size-5" />
                     </a>
+                        <!-- make it have a slight border with a different bg slightly -->
                     <input
                         v-model="designName"
                         type="text"
-                        class="border-0 focus:ring-0 text-lg font-medium"
+                        class="border border-gray-100 bg-gray-50 rounded px-2 py-1 focus:ring-0 text-lg font-medium"
                         placeholder="Untitled Design"
+                        @blur="handleDesignNameBlur"
                     />
                 </div>
                 

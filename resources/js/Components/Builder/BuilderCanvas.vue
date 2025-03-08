@@ -1,9 +1,33 @@
 <script setup>
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
+import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue';
 import { 
-    Type, Image, Square, Save, RotateCw, RotateCcw, Move, Layers, 
-    Palette, Ruler, Text, Settings, ZoomIn, ZoomOut, Maximize, 
-    ChevronDown, ChevronUp, MousePointer2 
+    Type, 
+    Image, 
+    Square, 
+    Circle,
+    Triangle,
+    Minus,
+    Save, 
+    RotateCw, 
+    RotateCcw, 
+    Move, 
+    Layers, 
+    Palette, 
+    Ruler, 
+    Text, 
+    Settings, 
+    ZoomIn, 
+    ZoomOut, 
+    Maximize,
+    X,
+    ChevronDown,
+    ChevronUp,
+    ChevronLeft,
+    ChevronRight,
+    Download,
+    FileText,
+    MousePointer2,
+    Hand,
 } from 'lucide-vue-next';
 import axios from 'axios';
 import { debounce } from 'lodash';
@@ -39,6 +63,8 @@ const rotationStartAngle = ref(0);
 const designHistory = ref([]);
 const historyIndex = ref(-1);
 const saveStatus = ref(''); // 'saving', 'saved', 'error'
+
+const isPdfDownloading = ref(false); // Track PDF download status
 
 // For all transformations
 const dragStartPosition = ref({ x: 0, y: 0 });
@@ -325,20 +351,64 @@ const handleDrop = (e) => {
     const x = (e.clientX - rect.left) / canvasSettings.value.displayScale;
     const y = (e.clientY - rect.top) / canvasSettings.value.displayScale;
 
+    // Base element properties
     const newElement = {
         id: Date.now(),
         type: elementType,
         x,
         y,
-        width: elementType === 'text' ? 300 : 200,
-        height: elementType === 'text' ? 100 : 200,
-        content: elementType === 'text' ? 'Click to edit' : null,
         rotation: 0,
-        fontSize: 12,
-        fontFamily: 'Arial',
-        color: '#000000',
         zIndex: elements.value.length // Add z-index for layering
     };
+    
+    // Add element-specific properties
+    if (elementType === 'text') {
+        newElement.width = 300;
+        newElement.height = 100;
+        newElement.content = 'Click to edit';
+        newElement.fontSize = 12;
+        newElement.fontFamily = 'Arial';
+        newElement.color = '#000000';
+    } 
+    else if (elementType === 'image') {
+        newElement.width = 200;
+        newElement.height = 200;
+        newElement.color = '#FFFFFF';
+    }
+    else if (elementType === 'square') {
+        newElement.type = 'shape'; // Keep type as 'shape' for compatibility
+        newElement.width = 200;
+        newElement.height = 200;
+        newElement.color = '#FFFFFF';
+        newElement.borderColor = '#000000';
+        newElement.borderRadius = 0; // Square has no border radius
+        newElement.shapeType = 'square'; // Add a shapeType property
+    }
+    else if (elementType === 'circle') {
+        newElement.type = 'shape';
+        newElement.width = 200;
+        newElement.height = 200;
+        newElement.color = '#FFFFFF';
+        newElement.borderColor = '#000000';
+        newElement.borderRadius = 100; // High border radius for circle
+        newElement.shapeType = 'circle';
+    }
+    else if (elementType === 'triangle') {
+        newElement.type = 'shape';
+        newElement.width = 200;
+        newElement.height = 200;
+        newElement.color = '#FFFFFF';
+        newElement.borderColor = '#000000';
+        newElement.shapeType = 'triangle';
+    }
+    else if (elementType === 'line') {
+        newElement.type = 'shape';
+        newElement.width = 200;
+        newElement.height = 4; // Thin height for a line
+        newElement.color = '#000000';
+        newElement.borderColor = '#000000';
+        newElement.shapeType = 'line';
+    }
 
     elements.value.push(newElement);
     selectedElement.value = newElement;
@@ -379,14 +449,13 @@ const startRotating = (e, element) => {
     rotationStartPosition.value = { x: e.clientX, y: e.clientY };
     
     // Calculate the center of the element in screen coordinates
-    const centerX = element.x + element.width / 2;
-    const centerY = element.y + element.height / 2;
-    const centerScreenX = centerX * canvasSettings.value.displayScale;
-    const centerScreenY = centerY * canvasSettings.value.displayScale;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
     
     // Calculate the initial angle
-    const dx = e.clientX - centerScreenX;
-    const dy = e.clientY - centerScreenY;
+    const dx = e.clientX - centerX;
+    const dy = e.clientY - centerY;
     rotationStartAngle.value = Math.atan2(dy, dx) * 180 / Math.PI - element.rotation;
 };
 
@@ -492,9 +561,18 @@ const handleDrag = (e) => {
                 break;
         }
         
-        // Ensure minimum size
-        newWidth = Math.max(50, newWidth);
-        newHeight = Math.max(50, newHeight);
+        // Special handling for line shape - preserve its height (thickness)
+        const isLine = selectedElement.value.type === 'shape' && selectedElement.value.shapeType === 'line';
+        
+        // Ensure minimum size - different for lines vs other elements
+        if (isLine) {
+            newWidth = Math.max(20, newWidth); // Minimum width for lines
+            // Don't enforce minimum height for lines - keep original height (thickness)
+            newHeight = elementStartSize.value.height;
+        } else {
+            newWidth = Math.max(50, newWidth);
+            newHeight = Math.max(50, newHeight);
+        }
         
         // Update element
         elements.value = elements.value.map(el => {
@@ -511,15 +589,14 @@ const handleDrag = (e) => {
     else if (isRotating.value && selectedElement.value) {
         const element = selectedElement.value;
         
-        // Calculate the center of the element in screen coordinates
-        const centerX = element.x + element.width / 2;
-        const centerY = element.y + element.height / 2;
-        const centerScreenX = centerX * canvasSettings.value.displayScale;
-        const centerScreenY = centerY * canvasSettings.value.displayScale;
+        // Get the bounding rectangle of the element
+        const elementRect = document.querySelector(`[data-element-id="${element.id}"]`).getBoundingClientRect();
+        const centerX = elementRect.left + elementRect.width / 2;
+        const centerY = elementRect.top + elementRect.height / 2;
         
         // Calculate angle between center and current mouse position
-        const dx = e.clientX - centerScreenX;
-        const dy = e.clientY - centerScreenY;
+        const dx = e.clientX - centerX;
+        const dy = e.clientY - centerY;
         const currentAngle = Math.atan2(dy, dx) * 180 / Math.PI;
         
         // Calculate new rotation
@@ -590,6 +667,123 @@ const changeElementProperty = (propertyName, value) => {
     // Update the selected element reference
     selectedElement.value = elements.value.find(el => el.id === selectedElement.value.id);
     saveToHistory();
+};
+
+// PDF download methods for Lambda-based PDF generation
+const downloadPdf = async () => {
+    if (!props.designId) {
+        // Make sure design is saved first
+        await saveDesign.flush();
+    }
+    
+    if (!props.designId) {
+        alert('Please save your design before downloading a PDF');
+        return;
+    }
+    
+    isPdfDownloading.value = true;
+    
+    try {
+        // Start the PDF generation process - this will trigger the Lambda function
+        const startResponse = await axios.post(`/api/designs/${props.designId}/pdf/generate`, {
+            designType: 'standard'
+        });
+        
+        const jobId = startResponse.data.job_id;
+        
+        // Poll for completion
+        const pdfUrl = await pollForCompletion(jobId);
+        
+        // Download the completed PDF
+        if (pdfUrl) {
+            // Create a temporary anchor element to trigger the download
+            const link = document.createElement('a');
+            link.href = pdfUrl;
+            link.setAttribute('download', `${props.product.name}_design.pdf`);
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+        }
+    } catch (error) {
+        console.error('Error downloading PDF:', error);
+        alert('Error downloading PDF. Please try again.');
+    } finally {
+        isPdfDownloading.value = false;
+    }
+};
+
+// Download print-ready PDF with crop marks using Lambda
+const downloadPrintReadyPdf = async () => {
+    if (!props.designId) {
+        // Make sure design is saved first
+        await saveDesign.flush();
+    }
+    
+    if (!props.designId) {
+        alert('Please save your design before downloading a print-ready PDF');
+        return;
+    }
+    
+    isPdfDownloading.value = true;
+    
+    try {
+        // Start the PDF generation process with print-ready type
+        const startResponse = await axios.post(`/api/designs/${props.designId}/pdf/generate`, {
+            designType: 'print_ready'
+        });
+        
+        const jobId = startResponse.data.job_id;
+        
+        // Poll for completion
+        const pdfUrl = await pollForCompletion(jobId);
+        
+        // Download the completed PDF
+        if (pdfUrl) {
+            // Create a temporary anchor element to trigger the download
+            const link = document.createElement('a');
+            link.href = pdfUrl;
+            link.setAttribute('download', `${props.product.name}_print-ready.pdf`);
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+        }
+    } catch (error) {
+        console.error('Error downloading print-ready PDF:', error);
+        alert('Error downloading print-ready PDF. Please try again.');
+    } finally {
+        isPdfDownloading.value = false;
+    }
+};
+
+// Helper function to poll for PDF generation completion
+const pollForCompletion = async (jobId) => {
+    const maxAttempts = 30; // Maximum polling attempts
+    const pollingInterval = 2000; // Polling interval in milliseconds
+    
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        try {
+            // Check job status
+            const statusResponse = await axios.get(`/api/pdf-jobs/${jobId}/status`);
+            const status = statusResponse.data.status;
+            
+            if (status === 'completed') {
+                // PDF is ready, return the download URL
+                return statusResponse.data.download_url;
+            } else if (status === 'failed') {
+                // PDF generation failed
+                throw new Error(statusResponse.data.error || 'PDF generation failed');
+            }
+            
+            // Wait before polling again
+            await new Promise(resolve => setTimeout(resolve, pollingInterval));
+        } catch (error) {
+            console.error('Error polling for PDF status:', error);
+            throw error;
+        }
+    }
+    
+    // If we reach here, the PDF generation is taking too long
+    throw new Error('PDF generation timed out. Please try again later.');
 };
 
 const moveLayer = (direction) => {
@@ -680,6 +874,68 @@ onUnmounted(() => {
     window.removeEventListener('mouseup', stopPanning);
     saveDesign.flush();
 });
+
+// For direct text editing
+const directEditingElement = ref(null);
+const directEditingTextarea = ref(null);
+
+// Format text with line breaks for display
+const formatTextWithLineBreaks = (text) => {
+    if (!text) return '';
+    return text.replace(/\n/g, '<br>');
+};
+
+// Start direct text editing
+const startDirectTextEditing = (element, e) => {
+    if (element.type !== 'text') return;
+    e.stopPropagation();
+    
+    directEditingElement.value = element;
+    
+    // Focus the textarea after it's rendered
+    nextTick(() => {
+        if (directEditingTextarea.value) {
+            directEditingTextarea.value.focus();
+        }
+    });
+};
+
+// Update text during direct editing
+const updateDirectEditingText = (e) => {
+    if (!directEditingElement.value) return;
+    
+    // Update the element in the elements array
+    elements.value = elements.value.map(el => {
+        if (el.id === directEditingElement.value.id) {
+            return { ...el, content: e.target.value };
+        }
+        return el;
+    });
+    
+    // Update the selected element if it's the same as the one being edited
+    if (selectedElement.value && selectedElement.value.id === directEditingElement.value.id) {
+        selectedElement.value = {
+            ...selectedElement.value,
+            content: e.target.value
+        };
+    }
+    
+    // Update the direct editing element reference
+    directEditingElement.value = elements.value.find(el => el.id === directEditingElement.value.id);
+};
+
+// Continue editing when Shift+Enter is pressed (add a new line)
+const continueDirectEditing = () => {
+    // Do nothing, just prevent the default behavior which would stop editing
+};
+
+// Stop direct text editing
+const stopDirectTextEditing = () => {
+    if (directEditingElement.value) {
+        saveToHistory();
+        directEditingElement.value = null;
+    }
+};
 </script>
 
 <template>
@@ -761,10 +1017,33 @@ onUnmounted(() => {
                 >
                     <Save class="size-4" />
                 </button>
+                <!-- New PDF Download Button -->
+                <button 
+                    @click="downloadPdf" 
+                    class="p-1.5 rounded-full hover:bg-gray-100" 
+                    title="Download PDF"
+                    :disabled="isPdfDownloading || !designId"
+                >
+                    <FileText class="size-4" :class="{'text-gray-400': !designId}" />
+                </button>
+                <!-- New Print-Ready PDF Download Button -->
+                <div class="relative">
+                    <button 
+                        @click="downloadPrintReadyPdf" 
+                        class="p-1.5 rounded-full hover:bg-gray-100" 
+                        title="Download Print-Ready PDF"
+                        :disabled="isPdfDownloading || !designId"
+                    >
+                        <Download class="size-4" :class="{'text-gray-400': !designId}" />
+                    </button>
+                </div>
                 <div v-if="saveStatus" class="flex items-center ml-1">
                     <span v-if="saveStatus === 'saving'" class="text-xs text-gray-500">Saving...</span>
                     <span v-else-if="saveStatus === 'saved'" class="text-xs text-green-600">Saved</span>
                     <span v-else-if="saveStatus === 'error'" class="text-xs text-red-600">Error</span>
+                </div>
+                <div v-if="isPdfDownloading" class="flex items-center ml-1">
+                    <span class="text-xs text-gray-500">Generating PDF...</span>
                 </div>
             </div>
         </div>
@@ -838,10 +1117,8 @@ onUnmounted(() => {
         <div v-if="propertiesPanelExpanded" class="p-2"> 
             <!-- Transform Properties -->
             <div v-if="activePropertyTab === 'transform'">
-                <!-- <div class="grid grid-cols-4 gap-2">  -->
-                    <!-- make it be flex fitting all in the one row evenly spaced -->
-                <div class="flex flex-row gap-2">
-                    <div>
+                <div class="flex flex-row gap-2 overflow-x-auto pb-1">
+                    <div class="min-w-[100px]">
                         <label class="block text-xs text-gray-500 mb-0.5">Position X ({{ unitDisplayText }})</label> 
                         <input 
                             type="number" 
@@ -851,10 +1128,10 @@ onUnmounted(() => {
                             @change="saveToHistory"
                             @click.stop
                             @keydown.stop
-                            class="w-auto px-2 py-1 border border-gray-300 rounded-md text-sm" 
+                            class="w-full px-2 py-1 border border-gray-300 rounded-md text-sm" 
                         >
                     </div>
-                    <div>
+                    <div class="min-w-[100px]">
                         <label class="block text-xs text-gray-500 mb-0.5">Position Y ({{ unitDisplayText }})</label>
                         <input 
                             type="number" 
@@ -864,10 +1141,10 @@ onUnmounted(() => {
                             @change="saveToHistory"
                             @click.stop
                             @keydown.stop
-                            class="w-auto px-2 py-1 border border-gray-300 rounded-md text-sm"
+                            class="w-full px-2 py-1 border border-gray-300 rounded-md text-sm"
                         >
                     </div>
-                    <div>
+                    <div class="min-w-[100px]">
                         <label class="block text-xs text-gray-500 mb-0.5">Width ({{ unitDisplayText }})</label>
                         <input 
                             type="number" 
@@ -877,10 +1154,10 @@ onUnmounted(() => {
                             @change="saveToHistory"
                             @click.stop
                             @keydown.stop
-                            class="w-auto px-2 py-1 border border-gray-300 rounded-md text-sm"
+                            class="w-full px-2 py-1 border border-gray-300 rounded-md text-sm"
                         >
                     </div>
-                    <div>
+                    <div class="min-w-[100px]">
                         <label class="block text-xs text-gray-500 mb-0.5">Height ({{ unitDisplayText }})</label>
                         <input 
                             type="number" 
@@ -890,10 +1167,10 @@ onUnmounted(() => {
                             @change="saveToHistory"
                             @click.stop
                             @keydown.stop
-                            class="w-auto px-2 py-1 border border-gray-300 rounded-md text-sm"
+                            class="w-full px-2 py-1 border border-gray-300 rounded-md text-sm"
                         >
                     </div>
-                    <div>
+                    <div class="min-w-[100px]">
                         <label class="block text-xs text-gray-500 mb-0.5">Rotation (°)</label>
                         <input 
                             type="number" 
@@ -902,7 +1179,7 @@ onUnmounted(() => {
                             @change="saveToHistory"
                             @click.stop
                             @keydown.stop
-                            class="w-auto px-2 py-1 border border-gray-300 rounded-md text-sm"
+                            class="w-full px-2 py-1 border border-gray-300 rounded-md text-sm"
                         >
                     </div>
                 </div>
@@ -910,22 +1187,20 @@ onUnmounted(() => {
             
             <!-- Text Properties -->
             <div v-if="activePropertyTab === 'text' && selectedElement.type === 'text'">
-                <!-- <div class="grid grid-cols-4 gap-2"> -->
-                    <!-- make it be flex fitting all in the one row evenly spaced -->
-                <div class="flex flex-row gap-2">
-                    <div class="col-span-4 mb-1"> <!-- Reduced from mb-2 -->
+                <div class="flex flex-row gap-2 overflow-x-auto pb-1">
+                    <div class="min-w-[200px]">
                         <label class="block text-xs text-gray-500 mb-0.5">Text Content</label>
-                        <input 
-                            type="text" 
+                        <textarea 
                             :value="selectedElement.content"
                             @input="updateElementProperty('content', $event.target.value)"
                             @change="saveToHistory"
                             @click.stop
                             @keydown.stop
-                            class="w-auto px-2 py-1 border border-gray-300 rounded-md text-sm"
-                        >
+                            class="w-full px-2 py-1 border border-gray-300 rounded-md text-sm resize-y"
+                            rows="1"
+                        ></textarea>
                     </div>
-                    <div>
+                    <div class="min-w-[80px]">
                         <label class="block text-xs text-gray-500 mb-0.5">Font Size</label>
                         <input 
                             type="number" 
@@ -934,10 +1209,10 @@ onUnmounted(() => {
                             @change="saveToHistory"
                             @click.stop
                             @keydown.stop
-                            class="w-auto px-2 py-1 border border-gray-300 rounded-md text-sm"
+                            class="w-full px-2 py-1 border border-gray-300 rounded-md text-sm"
                         >
                     </div>
-                    <div class="col-span-2">
+                    <div class="min-w-[140px]">
                         <label class="block text-xs text-gray-500 mb-0.5">Font Family</label>
                         <select 
                             :value="selectedElement.fontFamily"
@@ -945,7 +1220,7 @@ onUnmounted(() => {
                             @change="saveToHistory"
                             @click.stop
                             @keydown.stop
-                            class="w-auto px-2 py-1 border border-gray-300 rounded-md text-sm"
+                            class="w-full px-2 py-1 border border-gray-300 rounded-md text-sm"
                         >
                             <option value="Arial">Arial</option>
                             <option value="Times New Roman">Times New Roman</option>
@@ -954,7 +1229,7 @@ onUnmounted(() => {
                             <option value="Verdana">Verdana</option>
                         </select>
                     </div>
-                    <div>
+                    <div class="min-w-[140px]">
                         <label class="block text-xs text-gray-500 mb-0.5">Color</label>
                         <div class="flex items-center">
                             <input 
@@ -964,7 +1239,7 @@ onUnmounted(() => {
                                 @change="saveToHistory"
                                 @click.stop
                                 @keydown.stop
-                                class="w-6 h-6 p-0 rounded border border-gray-300" 
+                                class="w-6 h-6 p-0 rounded border border-gray-300"
                             >
                             <input 
                                 type="text" 
@@ -973,8 +1248,49 @@ onUnmounted(() => {
                                 @change="saveToHistory"
                                 @click.stop
                                 @keydown.stop
-                                class="w-auto ml-1 px-2 py-1 border border-gray-300 rounded-md text-sm" 
+                                class="w-20 ml-1 px-2 py-1 border border-gray-300 rounded-md text-sm"
                             >
+                        </div>
+                    </div>
+                    <div class="min-w-[140px]">
+                        <label class="block text-xs text-gray-500 mb-0.5">Alignment</label>
+                        <div class="flex border border-gray-300 rounded-md overflow-hidden">
+                            <button 
+                                @click="updateElementProperty('textAlign', 'left')"
+                                @click.stop
+                                class="p-1 hover:bg-gray-100"
+                                :class="{'bg-blue-50 text-blue-600': selectedElement.textAlign === 'left' || !selectedElement.textAlign}"
+                                title="Align Left"
+                            >
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="12" x2="15" y2="12"></line><line x1="3" y1="18" x2="18" y2="18"></line></svg>
+                            </button>
+                            <button 
+                                @click="updateElementProperty('textAlign', 'center')"
+                                @click.stop
+                                class="p-1 hover:bg-gray-100"
+                                :class="{'bg-blue-50 text-blue-600': selectedElement.textAlign === 'center'}"
+                                title="Align Center"
+                            >
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"></line><line x1="6" y1="12" x2="18" y2="12"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+                            </button>
+                            <button 
+                                @click="updateElementProperty('textAlign', 'right')"
+                                @click.stop
+                                class="p-1 hover:bg-gray-100"
+                                :class="{'bg-blue-50 text-blue-600': selectedElement.textAlign === 'right'}"
+                                title="Align Right"
+                            >
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"></line><line x1="9" y1="12" x2="21" y2="12"></line><line x1="6" y1="18" x2="21" y2="18"></line></svg>
+                            </button>
+                            <button 
+                                @click="updateElementProperty('textAlign', 'justify')"
+                                @click.stop
+                                class="p-1 hover:bg-gray-100"
+                                :class="{'bg-blue-50 text-blue-600': selectedElement.textAlign === 'justify'}"
+                                title="Justify"
+                            >
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+                            </button>
                         </div>
                     </div>
                 </div>
@@ -982,10 +1298,8 @@ onUnmounted(() => {
             
             <!-- Style Properties -->
             <div v-if="activePropertyTab === 'style'">
-                <!-- <div class="grid grid-cols-4 gap-2"> -->
-                    <!-- make it be flex fitting all in the one row evenly spaced -->
-                <div class="flex flex-row gap-2">
-                    <div v-if="selectedElement.type === 'shape'" class="col-span-2">
+                <div class="flex flex-row gap-2 overflow-x-auto pb-1">
+                    <div v-if="selectedElement.type === 'shape'" class="min-w-[180px]">
                         <label class="block text-xs text-gray-500 mb-0.5">Fill Color</label>
                         <div class="flex items-center">
                             <input 
@@ -1004,12 +1318,12 @@ onUnmounted(() => {
                                 @change="saveToHistory"
                                 @click.stop
                                 @keydown.stop
-                                class="w-auto ml-1 px-2 py-1 border border-gray-300 rounded-md text-sm"
+                                class="w-20 ml-1 px-2 py-1 border border-gray-300 rounded-md text-sm"
                             >
                         </div>
                     </div>
                     
-                    <div v-if="selectedElement.type === 'shape'" class="col-span-2">
+                    <div v-if="selectedElement.type === 'shape' && selectedElement.shapeType !== 'line'" class="min-w-[180px]">
                         <label class="block text-xs text-gray-500 mb-0.5">Border Color</label>
                         <div class="flex items-center">
                             <input 
@@ -1028,12 +1342,13 @@ onUnmounted(() => {
                                 @change="saveToHistory"
                                 @click.stop
                                 @keydown.stop
-                                class="w-auto ml-1 px-2 py-1 border border-gray-300 rounded-md text-sm"
+                                class="w-20 ml-1 px-2 py-1 border border-gray-300 rounded-md text-sm"
                             >
                         </div>
                     </div>
                     
-                    <div v-if="selectedElement.type === 'shape'" class="col-span-4">
+                    <!-- Only show border radius for square/circle shapes -->
+                    <div v-if="selectedElement.type === 'shape' && (!selectedElement.shapeType || selectedElement.shapeType === 'square' || selectedElement.shapeType === 'circle')" class="min-w-[180px]">
                         <label class="block text-xs text-gray-500 mb-0.5">Border Radius: {{ selectedElement.borderRadius || 0 }}px</label>
                         <input 
                             type="range" 
@@ -1044,11 +1359,27 @@ onUnmounted(() => {
                             @change="saveToHistory"
                             @click.stop
                             @keydown.stop
-                            class="w-auto bg-gray-200 rounded-lg appearance-none cursor-pointer" 
+                            class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"
                         >
                     </div>
                     
-                    <div v-if="selectedElement.type === 'text'" class="col-span-4">
+                    <!-- Line thickness for line shape -->
+                    <div v-if="selectedElement.type === 'shape' && selectedElement.shapeType === 'line'" class="min-w-[180px]">
+                        <label class="block text-xs text-gray-500 mb-0.5">Line Thickness: {{ selectedElement.height || 1 }}px</label>
+                        <input 
+                            type="range" 
+                            min="1" 
+                            max="20" 
+                            :value="selectedElement.height || 1" 
+                            @input="updateElementProperty('height', parseFloat($event.target.value))"
+                            @change="saveToHistory"
+                            @click.stop
+                            @keydown.stop
+                            class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"
+                        >
+                    </div>
+                    
+                    <div v-if="selectedElement.type === 'text'" class="min-w-[180px]">
                         <label class="block text-xs text-gray-500 mb-0.5">Text Color</label>
                         <div class="flex items-center">
                             <input 
@@ -1067,7 +1398,7 @@ onUnmounted(() => {
                                 @change="saveToHistory"
                                 @click.stop
                                 @keydown.stop
-                                class="w-auto ml-1 px-2 py-1 border border-gray-300 rounded-md text-sm"
+                                class="w-20 ml-1 px-2 py-1 border border-gray-300 rounded-md text-sm"
                             >
                         </div>
                     </div>
@@ -1076,43 +1407,39 @@ onUnmounted(() => {
             
             <!-- Layer Properties -->
             <div v-if="activePropertyTab === 'layer'">
-                <div class="flex flex-col items-center">
-                    <!-- <div class="grid grid-cols-2 gap-2 w-full mb-2">  -->
-                        <!-- make it be flex fitting all in the one row evenly spaced -->
-                    <div class="flex flex-row gap-2">
-                        <button 
-                            @click="moveLayer('top')" 
-                            class="flex items-center justify-center py-1 px-3 border border-gray-300 rounded-md text-sm" 
-                        >
-                            <span class="mr-1">Bring to Front</span> 
-                            <Layers class="size-4" />
-                        </button>
-                        <button 
-                            @click="moveLayer('up')" 
-                            class="flex items-center justify-center py-1 px-3 border border-gray-300 rounded-md text-sm"
-                        >
-                            <span class="mr-1">Bring Forward</span>
-                            <ChevronUp class="size-4" />
-                        </button>
-                        <button 
-                            @click="moveLayer('down')" 
-                            class="flex items-center justify-center py-1 px-3 border border-gray-300 rounded-md text-sm"
-                        >
-                            <span class="mr-1">Send Backward</span>
-                            <ChevronDown class="size-4" />
-                        </button>
-                        <button 
-                            @click="moveLayer('bottom')" 
-                            class="flex items-center justify-center py-1 px-3 border border-gray-300 rounded-md text-sm"
-                        >
-                            <span class="mr-1">Send to Back</span>
-                            <Layers class="size-4 transform rotate-180" />
-                        </button>
-                    </div>
+                <div class="flex flex-row gap-2 overflow-x-auto pb-1">
+                    <button 
+                        @click="moveLayer('top')" 
+                        class="flex items-center justify-center py-1 px-3 border border-gray-300 rounded-md text-sm whitespace-nowrap" 
+                    >
+                        <span class="mr-1">Bring to Front</span> 
+                        <Layers class="size-4" />
+                    </button>
+                    <button 
+                        @click="moveLayer('up')" 
+                        class="flex items-center justify-center py-1 px-3 border border-gray-300 rounded-md text-sm whitespace-nowrap"
+                    >
+                        <span class="mr-1">Bring Forward</span>
+                        <ChevronUp class="size-4" />
+                    </button>
+                    <button 
+                        @click="moveLayer('down')" 
+                        class="flex items-center justify-center py-1 px-3 border border-gray-300 rounded-md text-sm whitespace-nowrap"
+                    >
+                        <span class="mr-1">Send Backward</span>
+                        <ChevronDown class="size-4" />
+                    </button>
+                    <button 
+                        @click="moveLayer('bottom')" 
+                        class="flex items-center justify-center py-1 px-3 border border-gray-300 rounded-md text-sm whitespace-nowrap"
+                    >
+                        <span class="mr-1">Send to Back</span>
+                        <Layers class="size-4 transform rotate-180" />
+                    </button>
                     
                     <button 
                         @click="elements = elements.filter(el => el.id !== selectedElement.id); selectedElement = null; saveToHistory();" 
-                        class="mt-2 py-1 px-3 border border-red-300 rounded-md text-sm text-red-700 bg-red-50 hover:bg-red-100 w-auto" 
+                        class="py-1 px-3 border border-red-300 rounded-md text-sm text-red-700 bg-red-50 hover:bg-red-100 whitespace-nowrap ml-auto" 
                     >
                         Delete Element
                     </button>
@@ -1123,7 +1450,7 @@ onUnmounted(() => {
 
 <!-- Canvas Area -->
 <div 
-    class="relative bg-white shadow-lg mx-auto mt-20 mb-8"
+    class="relative bg-white shadow-lg mx-auto mt-40 mb-8"
     :style="{
         width: canvasSettings.width * canvasSettings.displayScale + 'px',
         height: canvasSettings.height * canvasSettings.displayScale + 'px',
@@ -1143,13 +1470,15 @@ onUnmounted(() => {
         }"
     >
         <!-- Trim Line Label -->
-        <div class="absolute -top-8 left-0 text-xs text-red-500 font-medium">
-            Trim Line - Content outside this line may be cut off
+        <div class="absolute -top-8 left-0 text-red-500 font-medium"
+             :class="zoomLevel < 0.9 ? 'text-[7px]' : 'text-xs'">
+            Trim Line - Content outside this line will be cut off
         </div>
     </div>
 
     <!-- Bleed Area Label -->
-    <div class="absolute -bottom-6 right-1 text-xs bg-white bg-opacity-75 px-1 py-0.5 rounded text-gray-700">
+    <div class="absolute -bottom-16 right-1 bg-white bg-opacity-75 px-1 py-0.5 rounded text-gray-700"
+         :class="zoomLevel < 0.9 ? 'text-[7px]' : 'text-xs'">
         <div>
             Dimensions: {{ pixelsToDisplayUnits(canvasSettings.trimWidth) }} × {{ pixelsToDisplayUnits(canvasSettings.trimHeight) }} {{ unitDisplayText }}
         </div>
@@ -1174,14 +1503,16 @@ onUnmounted(() => {
             transformOrigin: 'center center',
             zIndex: element.zIndex
         }"
+        :data-element-id="element.id"
         @mousedown="startDragging($event, element)"
         @click.stop="handleElementClick(element, $event)"
-        @dblclick.stop="handleTextEdit(element, $event)"
+        @dblclick.stop="startDirectTextEditing(element, $event)"
     >
         <!-- Text Element -->
         <div 
             v-if="element.type === 'text'"
             class="w-full h-full overflow-hidden"
+            @dblclick.stop="startDirectTextEditing(element, $event)"
         >
             <p 
                 :style="{
@@ -1190,11 +1521,31 @@ onUnmounted(() => {
                     color: element.color,
                     lineHeight: '1.2',
                     margin: '0',
-                    padding: '0'
+                    padding: '0',
+                    textAlign: element.textAlign || 'left',
+                    whiteSpace: 'pre-wrap' /* This preserves line breaks */
                 }"
+                v-html="formatTextWithLineBreaks(element.content)"
             >
-                {{ element.content }}
             </p>
+            
+            <!-- Editable overlay that appears when editing directly -->
+            <textarea
+                v-if="directEditingElement?.id === element.id"
+                :value="element.content"
+                @input="updateDirectEditingText($event)"
+                @blur="stopDirectTextEditing"
+                @keydown.enter.shift.prevent="continueDirectEditing"
+                @keydown.enter.exact.prevent="stopDirectTextEditing"
+                class="absolute inset-0 w-full h-full p-0 border-0 outline-none resize-none bg-transparent"
+                :style="{
+                    fontSize: `${element.fontSize * canvasSettings.displayScale}px`,
+                    fontFamily: element.fontFamily,
+                    color: element.color,
+                    textAlign: element.textAlign || 'left'
+                }"
+                ref="directEditingTextarea"
+            ></textarea>
         </div>
 
         <!-- Image Element -->
@@ -1209,13 +1560,48 @@ onUnmounted(() => {
         <!-- Shape Element -->
         <div 
             v-else-if="element.type === 'shape'"
-            class="w-full h-full"
-            :style="{
-                backgroundColor: element.color || '#FFFFFF',
-                border: '2px solid ' + (element.borderColor || '#000000'),
-                borderRadius: element.borderRadius ? `${element.borderRadius * canvasSettings.displayScale}px` : '0'
-            }"
-        />
+            class="w-full h-full relative"
+        >
+            <!-- Square or Circle shape (rendered using borderRadius) -->
+            <div 
+                v-if="!element.shapeType || element.shapeType === 'square' || element.shapeType === 'circle'"
+                class="w-full h-full absolute inset-0"
+                :style="{
+                    backgroundColor: element.color || '#FFFFFF',
+                    border: '2px solid ' + (element.borderColor || '#000000'),
+                    borderRadius: element.borderRadius ? `${element.borderRadius * canvasSettings.displayScale}px` : '0'
+                }"
+            />
+            
+            <!-- Triangle shape (rendered using CSS border trick) -->
+            <div 
+                v-else-if="element.shapeType === 'triangle'"
+                class="w-full h-full absolute inset-0 overflow-hidden"
+            >
+                <div
+                    class="absolute"
+                    :style="{
+                        width: '0',
+                        height: '0',
+                        borderLeft: `${element.width * canvasSettings.displayScale / 2}px solid transparent`,
+                        borderRight: `${element.width * canvasSettings.displayScale / 2}px solid transparent`,
+                        borderBottom: `${element.height * canvasSettings.displayScale}px solid ${element.color || '#FFFFFF'}`,
+                        top: '0',
+                        left: '0'
+                    }"
+                />
+            </div>
+            
+            <!-- Line shape (just a rectangle with minimal height) -->
+            <div 
+                v-else-if="element.shapeType === 'line'"
+                class="absolute left-0 right-0 top-1/2 transform -translate-y-1/2"
+                :style="{
+                    height: `${element.height * canvasSettings.displayScale}px`,
+                    backgroundColor: element.color || '#000000'
+                }"
+            />
+        </div>
 
         <!-- Resize Handles (only visible when element is selected) -->
         <template v-if="selectedElement?.id === element.id">
@@ -1254,7 +1640,7 @@ onUnmounted(() => {
                 :class="{ 'bg-gray-200': isPanning }"
                 title="Toggle Pan Mode"
             >
-                <MousePointer2 class="size-5" />
+                <Hand class="size-5" />
             </button>
             
             <button 

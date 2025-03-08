@@ -1,13 +1,15 @@
 <script setup>
-import { Type, Image, Layout, Square } from 'lucide-vue-next';
+
+import { Type, Image, Square, Circle, Triangle, Minus } from 'lucide-vue-next';
 
 const elements = [
     { id: 'text', icon: Type, label: 'Text', description: 'Add text to your design' },
     { id: 'image', icon: Image, label: 'Image', description: 'Upload or choose an image' },
-    { id: 'shape', icon: Square, label: 'Shape', description: 'Add shapes to your design' },
-    { id: 'layout', icon: Layout, label: 'Layout', description: 'Add a layout container' }
+    { id: 'square', icon: Square, label: 'Square', description: 'Add a square or rectangle' },
+    { id: 'circle', icon: Circle, label: 'Circle', description: 'Add a circle or oval' },
+    { id: 'triangle', icon: Triangle, label: 'Triangle', description: 'Add a triangle' },
+    { id: 'line', icon: Minus, label: 'Line', description: 'Add a straight line' }
 ];
-
 const handleDragStart = (e, elementType) => {
     e.dataTransfer.setData('text/plain', elementType);
 };

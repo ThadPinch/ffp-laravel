@@ -13,6 +13,8 @@
     ],
     "require": {
         "php": "^8.2",
+        "aws/aws-sdk-php": "^3.340",
+        "barryvdh/laravel-dompdf": "^3.1",
         "inertiajs/inertia-laravel": "^1.0",
         "intervention/image": "^3.11",
         "laravel/cashier": "^15.6",

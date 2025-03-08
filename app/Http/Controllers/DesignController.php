@@ -10,6 +10,10 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Storage;
 use Inertia\Inertia;
 use Intervention\Image\Facades\Image;
+use App\Providers\DesignPdfServiceProvider;
+use PDF;
+use App\Models\PdfJob;
+use Illuminate\Support\Str;
 
 class DesignController extends Controller
 {
@@ -209,5 +213,91 @@ class DesignController extends Controller
         $design->delete();
         
         return response()->noContent();
+    }
+    
+  /**
+     * Initialize PDF generation with Lambda
+     * This is an asynchronous process that will be completed in the background
+     */
+    public function generatePdf(Request $request, Design $design)
+    {
+        // Check if user is the owner of the design
+        if ($design->user_id !== Auth::id() && !($design->is_template ?? false)) {
+            return response()->json(['message' => 'Unauthorized'], 403);
+        }
+        
+        // Load associated product
+        $design->load('product');
+        
+        $request->validate([
+            'designType' => 'required|string|in:standard,print_ready',
+        ]);
+
+        Storage::append('pdf2.txt', 'Generating PDF for design: ' . $design->id);
+        // Create a job record to track the PDF generation
+        $job = PdfJob::create([
+            'user_id' => Auth::id(),
+            'design_id' => $design->id,
+            'type' => $request->designType,
+            'status' => 'pending',
+            'job_id' => (string) Str::uuid(), // Generate a unique job ID
+        ]);
+        
+        // Dispatch the PDF generation job to the queue
+        dispatch(new \App\Jobs\GeneratePdfJob($job));
+        Storage::append('pdf2.txt', 'Job dispatched');
+        
+        return response()->json([
+            'job_id' => $job->job_id,
+            'message' => 'PDF generation has been initiated'
+        ]);
+    }
+    
+    /**
+     * Check the status of a PDF generation job
+     */
+    public function checkPdfStatus(Request $request, string $jobId)
+    {
+        $job = PdfJob::where('job_id', $jobId)
+            ->where('user_id', Auth::id())
+            ->firstOrFail();
+        
+        $response = [
+            'status' => $job->status,
+        ];
+        
+        if ($job->status === 'completed') {
+            $response['download_url'] = url("storage/{$job->file_path}");
+        } elseif ($job->status === 'failed') {
+            $response['error'] = $job->error_message;
+        }
+        
+        return response()->json($response);
+    }
+    
+    /**
+     * Get the actual PDF file (if the generation is complete)
+     */
+    public function downloadPdfFile(string $jobId)
+    {
+        $job = PdfJob::where('job_id', $jobId)
+            ->where('user_id', Auth::id())
+            ->firstOrFail();
+        
+        if ($job->status !== 'completed' || !$job->file_path) {
+            abort(404, 'PDF file not found or generation not complete');
+        }
+        
+        // Get the design details for the filename
+        $design = Design::findOrFail($job->design_id);
+        
+        // Create a readable filename
+        $filename = Str::slug($design->name) . '_' . ($job->type === 'print_ready' ? 'print-ready' : 'standard') . '.pdf';
+        
+        return response()->download(
+            storage_path("app/public/{$job->file_path}"),
+            $filename,
+            ['Content-Type' => 'application/pdf']
+        );
     }
 }
